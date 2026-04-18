@@ -22,13 +22,17 @@ Do **not** implement features, write PRDs, or do anything beyond the steps above
 
 ## Step 1 — Guard against re-init
 
-Check if `.oberon/` already exists in the current working directory.
+Check whether `.oberon/` already exists in the current working directory.
 
-If it exists, abort immediately with:
+- If `.oberon/` does **not** exist, proceed to Step 2 as normal.
+- If `.oberon/` exists and its **only** top-level entry is `archived/` (a previously-archived, not-yet-re-initialized state, as produced by `/obr-archive`), treat this as a valid starting state: proceed to Step 2. Do **not** touch, move, or delete the `archived/` folder — later steps will write the new `PROJECT.md` and `state.json` alongside it.
+- Otherwise (i.e. `.oberon/` exists and contains any top-level entry other than `archived/`), abort immediately with:
 
-> `.oberon/` already exists. Delete it to re-initialize, or run `/obr-spec` to continue.
+  > `.oberon/` already exists. Delete it to re-initialize, or run `/obr-spec` to continue.
 
-Do nothing else. Do not proceed.
+  Do nothing else. Do not proceed.
+
+"Top-level entry" means any immediate child of `.oberon/` — files or directories, including dotfiles. `archived/` must be the single entry for the bypass to apply; if `archived/` is present alongside anything else, the abort path above still fires.
 
 ---
 
