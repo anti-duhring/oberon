@@ -19,6 +19,12 @@ Create a Product Requirements Document for an Oberon-initialized project. Input 
 
 **Do not start implementing. Just write the PRD.**
 
+### Hard rule — no stopping after the questions are answered
+
+When the user replies to your clarifying questions, that is the **trigger** to produce the PRD and write the file in the same turn. Do not summarize the answers back at the user. Do not ask follow-ups. Do not wait for acknowledgement. Generate the PRD content and call `Write .oberon/PRD.md` immediately.
+
+If this skill is invoked by a command (e.g. `/obr-spec`), that command has state-update work to do after the PRD is written. Hand control back to the caller in the same turn — do not stop at the PRD.
+
 ---
 
 ## Step 1: Clarifying Questions

@@ -52,11 +52,31 @@ Invoke the `obr-grill` skill, passing the seed content (or a note that there is 
 
 Follow the skill's rules strictly: terse one-question-per-turn interview. Only grill gaps the seed doesn't already answer.
 
-When the grill ends, the skill emits an Overview / Decisions / Open Questions block. Capture that block — you'll embed it into `PROJECT.md`.
-
 You also need a **project name**. If the seed or the grill didn't surface one, ask explicitly as the final grill question: "What should this project be called? (short name, used as the title of PROJECT.md)".
 
-**Do not stop here.** The grill output block is an intermediate artifact, not a final deliverable. The user's last input during `/obr-init` is their final grill answer — everything after that is your job to complete autonomously. Proceed immediately to Steps 4–6 **in the same turn**, without waiting for user acknowledgement. Stopping after the grill output leaves the project half-initialized (no `.oberon/` directory, no state file) and breaks this command's contract.
+### Detecting the end of the grill
+
+The grill is "over" when **both** are true:
+- You have enough decisions to write PROJECT.md (every meaningful branch resolved).
+- You have a project name.
+
+At that point the user has just given their last answer. Do **not** ask another question. Do **not** wait for acknowledgement. The next thing you produce in the same turn is:
+
+1. The Overview / Decisions / Open Questions block (for display AND for embedding into PROJECT.md).
+2. The tool calls in Steps 4–6 below.
+
+### Hard rule — no stopping after the grill block
+
+The grill's output block is **not a final message**. It is an intermediate handoff. If you emit the block and stop, the project is broken: no `.oberon/` directory, no `state.json`, `/obr-spec` will fail. This is a command contract violation.
+
+Every turn in which you emit the grill block **must also** contain (in this order, same turn):
+- `mkdir -p .oberon` (via Bash)
+- `Write .oberon/PROJECT.md`
+- `Write .oberon/state.json`
+- The `.gitignore` check from Step 5
+- The confirmation from Step 6
+
+If you find yourself about to end a turn right after emitting the Overview/Decisions block, **stop — you are bugging out**. Continue with Steps 4–6 in the same turn.
 
 ---
 

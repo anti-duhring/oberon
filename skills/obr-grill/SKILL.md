@@ -75,13 +75,20 @@ Skip branches the seed already answers. Add branches if the project needs them.
 
 ## Ending the grill
 
-When the tree is resolved, emit a single final message containing the **Output** block below (see next section). Do not pad with a closing question. Do not summarize what was discussed — the output block is the summary.
+This skill is invoked by a command that has more work to do after the grill resolves. The Output block below is an **internal handoff to the caller**, not a user-facing farewell.
+
+When the tree is resolved:
+
+1. Emit the Output block (see next section). Do not pad with a closing question. Do not summarize what was discussed — the output block is the summary.
+2. **Immediately in the same turn**, hand control back to the invoking command so it can persist files and update state. Do not stop after emitting the block. Do not wait for user acknowledgement. The user's final grill answer is the trigger for the caller to finish its job — there is nothing more to ask.
+
+Stopping after the Output block leaves the project half-initialized. The grill is not "done" until the caller has written its files.
 
 ---
 
 ## Output format
 
-When the grill ends, emit exactly this block (the invoking command will parse it):
+When the grill ends, emit exactly this block (the invoking command will parse it and continue in the same turn):
 
 ```markdown
 ## Overview

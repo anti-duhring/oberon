@@ -51,9 +51,20 @@ Read `.oberon/PROJECT.md` in full. Then invoke the `obr-prd` skill with that con
 
 `obr-prd` is interactive: it will ask 3–5 targeted clarifying questions to fill gaps that PROJECT.md doesn't already answer. Let it drive. Do not answer its questions on the user's behalf — wait for the user's reply.
 
-When `obr-prd` produces the PRD, capture the full document.
+### Detecting the end of the PRD interview
 
-**Do not stop here.** The PRD document is an intermediate artifact, not a final deliverable. The user's last input during `/obr-spec` is their final answer to `obr-prd`'s clarifying questions — everything after that is your job to complete autonomously. Proceed immediately to Steps 3–5 **in the same turn**, without waiting for user acknowledgement. Stopping after the PRD is generated leaves the project in an inconsistent state (no `.oberon/PRD.md`, `state.json` still in `grilled` phase) and breaks this command's contract.
+The interview is over the moment the user replies to the clarifying questions. `obr-prd` asks questions in a single batch, so there is exactly one user reply to wait for. After that reply, do **not** ask follow-ups and do **not** wait for acknowledgement.
+
+### Hard rule — no stopping after the PRD is produced
+
+The PRD document is **not a final message**. The user's last input during `/obr-spec` is their reply to `obr-prd`'s clarifying questions — everything after that is your job, and it must happen in the same turn as you generate the PRD.
+
+Every turn that generates the PRD content **must also** contain (in this order, same turn):
+- `Write .oberon/PRD.md`
+- The state update from Step 4 (`Write .oberon/state.json` with `phase: "prd-done"`)
+- The confirmation from Step 5
+
+If you find yourself about to end a turn right after producing the PRD body without writing it to disk and updating state, **stop — you are bugging out**. Continue with Steps 3–5 in the same turn. Stopping early leaves the project in an inconsistent state (no `.oberon/PRD.md`, `state.json` still in `grilled` phase) and breaks this command's contract.
 
 ---
 
