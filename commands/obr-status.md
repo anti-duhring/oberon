@@ -10,8 +10,8 @@ Print a compact, read-only snapshot of the current Oberon project's state, follo
 
 1. Detect whether `.oberon/` exists in the current working directory.
 2. If it does not exist, render the uninitialized-directory output (Step 2 below).
-3. If it does exist, render the active-project status block (extended by follow-on tasks; see "Active project" below).
-4. Print exactly one Next advisory as the final line of output.
+3. If it does exist, render the active-project status block (Step 3 below).
+4. Print exactly one Next advisory as the final line of output (Step 4 below for active projects; Step 2 for the uninitialized path).
 
 Do **not** write, rename, or delete any file. Do **not** modify `state.json`, phase files, or `PROJECT.md` under any circumstance. `/obr-status` is strictly read-only — even when inconsistency is detected.
 
@@ -22,7 +22,7 @@ Do **not** write, rename, or delete any file. Do **not** modify `state.json`, ph
 Check whether `.oberon/` exists in the current working directory.
 
 - If `.oberon/` does **not** exist, go to Step 2 (uninitialized path).
-- If `.oberon/` exists, go to the "Active project" section below.
+- If `.oberon/` exists, go to Step 3 (active project) and then Step 4 (Next advisory).
 
 ---
 
@@ -55,14 +55,74 @@ Stop after printing the Next advisory. Do not proceed to the active-project path
 
 ---
 
-## Active project
+## Step 3 — Active project
 
-When `.oberon/` exists, render the active-project status block. This path is scaffolded here and extended by follow-on tasks:
+When `.oberon/` exists, read `.oberon/state.json` and render a compact status block in this order:
 
-- Task 1-2 adds: read `state.json`, render a header line with project name and current `state.phase`, map pre-plan phases (`initialized`, `grilled`, `prd-done`) to their Next advisory, list phase/task progress when phase files are present, and emit `Next: run /obr-archive` when every task is `done`.
-- Task 1-3 adds: warning lines for state/plan drift (missing phase directory or task file, unrecognized `state.phase`) and a single `error:` line plus `Next: inspect .oberon/state.json` when `state.json` is malformed or missing required fields.
+1. **Header line.** Exactly one line naming the project and the current top-level phase:
 
-Until those tasks land, the active-project branch is intentionally not implemented here.
+   ```
+   <project_name> — phase: <state.phase>
+   ```
+
+   Use `state.project_name` and `state.phase` verbatim. The separator is an em-dash (`—`, U+2014) with a single space on each side. No leading bullet, no trailing period, single line.
+
+2. **Per-phase block — only if `state.phases` is present and non-empty.** If `state.phases` is absent (pre-plan states: `initialized`, `grilled`, `prd-done`), skip this block entirely and go straight to Step 4.
+
+   Otherwise, iterate over `state.phases` in numeric order of the phase keys (`"1"`, `"2"`, …, sorted as integers — never alphabetically). For each phase:
+
+   - **If the phase status is `completed`:** emit a single counts line:
+
+     ```
+     phase N: X/Y done
+     ```
+
+     where `X` is the number of tasks in that phase whose status is `completed`, and `Y` is the total task count. No per-task list for completed phases.
+
+   - **If the phase status is `skipped`:** emit a single line:
+
+     ```
+     phase N: skipped
+     ```
+
+     No per-task list for skipped phases.
+
+   - **Otherwise (`pending`, `in_progress`, `failed`) — this is the current or a future phase:** emit a phase header line followed by one indented task row per task, in task-ID order (`N-1`, `N-2`, …, sorted by integer `M`, never alphabetically):
+
+     ```
+     phase N:
+       <id> <title> — <status>
+       <id> <title> — <status>
+     ```
+
+     Each task row uses the task ID verbatim (`N-M`), the task's title (read from the first line of `.oberon/phases/N/N-M.md`, which is `# [N-M] <title>` — take everything after `] `), an em-dash (`—`, U+2014) with a single space on each side, and a status word from this vocabulary:
+
+     - per-task `status == "completed"` → render `done`
+     - per-task `status == "pending"`, `"in_progress"`, `"failed"`, or `"needs_input"` → render `pending`
+     - per-task `status == "skipped"` → render `skipped`
+
+     The three-word rendered vocabulary (`done` / `pending` / `skipped`) is normative; do not surface richer statuses in this step. (Task 1-3 layers warnings on top for drift cases.)
+
+   The per-phase block is a single contiguous group of lines — no blank line between phases, no blank line between a phase header and its task rows. A medium plan (3 phases × 4 tasks) must fit in one glance.
+
+3. **Blank line separator.** Insert exactly one blank line between the status block (header + per-phase block) and the final Next advisory.
+
+---
+
+## Step 4 — Next advisory (active project)
+
+Emit exactly one Next advisory as the final line of output. The mapping is exhaustive — pick the first matching rule:
+
+1. `state.phase == "initialized"` → `Next: run /obr-spec`
+2. `state.phase == "grilled"` → `Next: run /obr-plan`
+3. `state.phase == "prd-done"` → `Next: run /obr-phase 1`
+4. `state.phases` exists and every phase is `completed` or `skipped`, AND every task inside every non-skipped phase has status `completed` → `Next: run /obr-archive`
+5. `state.phase == "done"` → `Next: run /obr-archive`
+6. `state.phases` exists and at least one phase is still non-terminal → `Next: run /obr-phase N`, where `N` is the lowest-numbered phase whose `status` is neither `completed` nor `skipped`.
+
+All advisories follow the normative format: lowercase `run`, slash-prefixed command, no backticks, no trailing period, single line. Tasks inside skipped phases do **not** need to be `completed` for rule 4 to fire — a skipped phase's tasks are counted as resolved wholesale.
+
+Task 1-3 layers warning and error branches on top of Steps 3–4 (drift between `state.json` and disk, unrecognized `state.phase` values, malformed `state.json`). Until that task lands, the active-project path assumes the state is well-formed and consistent with disk.
 
 ---
 
