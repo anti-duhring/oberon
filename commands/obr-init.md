@@ -122,7 +122,11 @@ If the Explore subagent fails, errors out, or returns nothing usable:
 
 Invoke the `obr-grill` skill, passing the seed content (or a note that there is no seed).
 
-Follow the skill's rules strictly: terse one-question-per-turn interview. Only grill gaps the seed doesn't already answer.
+When `<codebase-context>` from Step 3 is neither the empty-repo placeholder (`_empty repo — no codebase to scan_`) nor a scan-failed error line (`_codebase scan failed: ..._`), pass it to `obr-grill` as an **additional input** alongside the seed. Hand it over labeled `Codebase Context` so the grill can tell it apart from user-provided seed material. The grill's existing "read input first; only ask about what's missing" rule applies to the Codebase Context exactly as it does to the user seed — gaps already answered by the scan must not be asked.
+
+When `<codebase-context>` **is** the empty-repo placeholder or a scan-failed error line, do not pass it to the grill. The grill proceeds with just the seed (or no seed), exactly as before.
+
+Follow the skill's rules strictly: terse one-question-per-turn interview. Only grill gaps the seed (and, when provided, the Codebase Context) doesn't already answer.
 
 **Do not ask the user for a project name.** The slug is derived automatically in Step 5 — it is never an interview question, never a grill branch, and never a standalone prompt.
 

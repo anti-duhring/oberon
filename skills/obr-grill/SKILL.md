@@ -18,7 +18,9 @@ The invoking command passes one of:
 - an **inline description** — treat as seed context
 - **nothing** — begin the grill from zero
 
-Before asking the first question, read all seed context. Build a mental map of what's already decided. **Do not ask about anything the seed already answers.** Only grill gaps, contradictions, and under-specified branches.
+In addition, the invoking command may pass a **Codebase Context** — a structured snapshot of the repository the project lives in (e.g. layout, languages, frameworks, entry points). When present, it is labeled as such by the caller. Treat the Codebase Context as another seed input: read it first, alongside any user-provided seed, and suppress questions whose answers it plainly supplies (e.g. language, framework, packaging, existing entry points). The Codebase Context is never passed when it is a placeholder (empty repo) or an error line (scan failed) — the caller filters those out before handing off.
+
+Before asking the first question, read all seed context (user seed and, when provided, Codebase Context). Build a mental map of what's already decided. **Do not ask about anything the seed or Codebase Context already answers.** Only grill gaps, contradictions, and under-specified branches.
 
 ---
 
