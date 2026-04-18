@@ -142,6 +142,7 @@ Use the Agent tool (or an equivalent subagent-spawning mechanism). Do not implem
 **`status: "success"`**
 
 - Set `tasks["<N-M>"].status = "completed"`, `completed_at` = now, `commit_sha`, `rewrite_commit_sha`.
+- Append or update an entry in the top-level `state.completed_tasks` array (see "Recording completed tasks" below).
 - Persist.
 - Emit a one-line per-task marker, e.g. `✓ [N-M] <title> — <short-sha>`.
 - Continue to the next task.
@@ -229,12 +230,34 @@ If `state.phases["<N+1>"]` does not exist:
 
 ---
 
+## Recording completed tasks
+
+On every successful executor return in Step 5c, append or update an entry in the top-level `state.completed_tasks` array alongside the per-task state mutation. This is the authoritative record that downstream commands (e.g. the end-of-project summary) read from — it must never drift from the actual implementation commits.
+
+Entry shape (exact keys, exact order):
+
+```json
+{ "task": "N-M", "title": "<task title>", "sha": "<short sha>" }
+```
+
+Rules:
+
+- **SHA source.** Use the `commit_sha` field from the executor's returned payload. Do **not** shell out to `git rev-parse`, `git log`, or any other reconstruction — the executor is the single source of truth. Truncate the full SHA to its first 7 characters for the `sha` field. (The per-task `commit_sha` under `state.phases["<N>"].tasks["<N-M>"]` continues to hold the full 40-char SHA.)
+- **Title source.** Read the first Markdown heading of `.oberon/phases/<N>/<N-M>.md`. The task file's first line is `# [N-M] <title>` — extract `<title>` (everything after the `] `). Do not substitute, do not re-render.
+- **Create on first write.** If `state.completed_tasks` is absent (older state file from before this feature), create it as an empty array before appending. Its absence is never an error and never a migration — just create-on-first-write.
+- **Keyed by `task`.** Before appending, scan `completed_tasks` for an existing entry whose `task` equals `"N-M"`. If one exists, update that entry in place (refresh `title` and `sha`) rather than appending a duplicate. This is the re-run path (e.g. a task that failed, was retried, and now succeeds with a different SHA).
+- **Atomic write.** Write `state.json` atomically: serialize the updated object to `.oberon/state.json.tmp` (or equivalent temp path in the same directory), then rename over `.oberon/state.json`. Never write the final path in place. Same pattern as every other `state.json` mutation in this command.
+- **Same turn as task completion.** The `completed_tasks` append/update must land in the same persist that marks the task completed — not deferred to phase completion, not batched at the end of the loop. If `/obr-phase` crashes after the task commits but before this write, the next invocation must be able to resume without losing the record (per-task SHA on the phase node is the fallback, but the primary record is `completed_tasks`).
+- **Skipped phases and skipped tasks produce no entries.** Step 2 (skip mode) never reaches Step 5c — satisfied by construction. In the per-task failure branch, the **skip** choice sets the task status to `skipped` and does **not** add a `completed_tasks` entry. Only successful executor returns produce entries.
+
+---
+
 ## Persistence rules (apply everywhere)
 
 - Every state transition (task start, task complete, task failure, task needs_input, task skipped, phase start, phase complete, phase skipped, phase failure) **must be persisted to `state.json` before control returns to the user** — including while waiting for a retry/skip/abort choice or a `needs_input` answer.
 - Always update `state.updated_at` when writing.
-- Write atomically (temp file + rename) when practical.
-- Never lose a commit SHA — capture it the moment the executor returns, not later.
+- Write atomically (temp file + rename) — this applies to every `state.json` rewrite, including the `completed_tasks` append/update.
+- Never lose a commit SHA — capture it the moment the executor returns, not later. The SHA must come from the executor's payload; never reconstruct via `git rev-parse` or `git log`.
 
 ---
 

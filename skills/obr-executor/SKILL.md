@@ -35,6 +35,8 @@ Return exactly one of these JSON-shaped payloads as your final message. No extra
 }
 ```
 
+`commit_sha` is the **full 40-character SHA** of the implementation commit you just created (Step 6). The main agent is the sole consumer and uses this value both to populate `state.phases["<N>"].tasks["<N-M>"].commit_sha` and to derive the short-SHA entry it writes into `state.completed_tasks`. Never return a truncated SHA, never omit the field on success, and never reconstruct it from `git log` after the fact — it is the direct output of the single commit you made for this task.
+
 **Failure**
 ```json
 {
