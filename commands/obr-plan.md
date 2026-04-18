@@ -69,11 +69,13 @@ If either check fails, stop and report the specific discrepancy. Do not attempt 
 
 ## Step 4 — Tell the user what's next
 
-Print a short confirmation. Example:
+Print a short confirmation — exactly two lines: one "what happened" line plus the normative advisory line. Example:
 
 > Planned: 2 phase(s), 7 task(s). Verification: `npm test`, `npm run lint`.
 >
-> Next: run `/obr-phase 1`.
+> Next: run /clear to reset context, then /obr-phase 1
+
+The advisory line is **normative**: lowercase `r` in `run`, slash-prefixed commands (no backticks), simple comma-separated clauses (no em-dash), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only. No multi-paragraph rationale, no extra emoji.
 
 Keep it tight. No long summary.
 

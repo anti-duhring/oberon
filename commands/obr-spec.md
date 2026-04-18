@@ -88,9 +88,13 @@ Write atomically (write to a temp file, rename) if practical — otherwise a str
 
 ## Step 5 — Confirm
 
-Print a short message:
+Print a short message — exactly two lines: the "what happened" line and the normative advisory line:
 
 > PRD written to `.oberon/PRD.md`. Phase: `prd-done`.
+>
+> Next: run /clear to reset context, then /obr-plan
+
+The advisory line is **normative**: lowercase `r` in `run`, slash-prefixed commands (no backticks), simple comma-separated clauses (no em-dash), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only. No multi-paragraph rationale, no extra emoji.
 
 Keep it tight.
 

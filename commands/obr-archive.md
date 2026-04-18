@@ -128,9 +128,11 @@ Example:
 > Overview:
 > <overview paragraph>
 
-Then, on a separate line below the summary, print:
+Then, on a separate line below the summary, print the normative advisory line:
 
-> Run `/obr-init` to begin again.
+> Next: run /clear to reset context, then /obr-init
+
+The advisory line is **normative**: lowercase `r` in `run`, slash-prefixed commands (no backticks), simple comma-separated clauses (no em-dash), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only. No multi-paragraph rationale, no extra emoji.
 
 Do **not** list every archived file. Do **not** use ANSI color codes or emoji. Keep the summary tight.
 

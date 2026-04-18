@@ -204,24 +204,24 @@ If `.gitignore` does **not** exist, do nothing. Do not create one.
 
 ## Step 7 — Tell the user what's next
 
-Print a short confirmation that announces the auto-generated slug and reminds the user how to override it. Do **not** ask for approval — no `[y/N]`, no pause, no waiting.
+Print a short confirmation that announces the auto-generated slug. Do **not** ask for approval — no `[y/N]`, no pause, no waiting.
 
 Format:
 
 > Oberon initialized as `<slug>`. Decisions captured in `.oberon/PROJECT.md`.
 >
-> If the name is wrong, re-run `/obr-init --name <your-slug>`.
->
-> Next: run `/obr-spec` to generate the PRD.
+> Next: run /clear to reset context, then /obr-spec
 
 Substitute `<slug>` with the verbatim slug from Step 4.
 
-If a non-primary derivation path was taken (per Step 4's recording), insert a single advisory line directly after the first line, before the `--name` reminder:
+The advisory line is **normative**: lowercase `r` in `run`, slash-prefixed commands (no backticks), simple comma-separated clauses (no em-dash), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only. The confirmation is two lines total: one "what happened" line plus the advisory. No `--name` reminder, no multi-paragraph rationale, no extra emoji.
+
+If a non-primary derivation path was taken (per Step 4's recording), insert a single advisory line directly after the first line, before the `Next:` line:
 
 - Seed was provided but LLM generation failed → `LLM slug generation failed; fell back to the current directory name.`
 - Seed was provided but both LLM generation and cwd basename failed → `LLM slug generation and cwd-basename fallback failed; used the last-resort slug.`
 
-If the primary path succeeded, emit the three-line form above with no fallback advisory.
+If the primary path succeeded, emit the two-line form above with no fallback advisory.
 
 Keep it tight. No long summary. No approval prompt.
 
