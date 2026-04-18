@@ -12,6 +12,7 @@ The canonical chain is `/obr-init` → `/obr-spec` → `/obr-plan` → `/obr-pha
 - `/obr-spec` — generates a PRD from the project decisions and writes it to `.oberon/PRD.md`.
 - `/obr-plan` — decomposes the PRD into a 1–4 phase plan, discovers verification commands, and writes per-task files under `.oberon/phases/N/N-M.md`.
 - `/obr-phase N` — executes every task in phase `N` sequentially via fresh executor subagents; `/obr-phase N skip` marks a phase skipped without running it.
+- `/obr-status` — prints a read-only snapshot of the current Oberon project's phase and per-task progress, plus a single-line Next advisory. Safe to run from any state.
 
 ## Install
 
@@ -65,7 +66,8 @@ Then plan and execute:
 │   ├── obr-init.md
 │   ├── obr-spec.md
 │   ├── obr-plan.md
-│   └── obr-phase.md
+│   ├── obr-phase.md
+│   └── obr-status.md
 ├── skills/
 │   ├── obr-grill/     # terse interview skill used by /obr-init
 │   ├── obr-prd/       # PRD generator used by /obr-spec
