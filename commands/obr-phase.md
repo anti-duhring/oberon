@@ -203,7 +203,14 @@ On success (or empty verification list):
 - Clear any phase-level `last_error`.
 - Persist.
 
-Emit a phase summary:
+**End-of-project detection.** Classify the phase that just completed as the end of the project when **both** of the following hold:
+
+- `state.phases["<N>"]` is the highest-numbered phase with a `planned` or `in-progress` status that the plan ever produced — i.e. phase `N` is the final planned phase.
+- `state.phases["<N+1>"]` does not exist.
+
+Skipped earlier phases and earlier phases that completed out-of-band do not change this classification — the test is purely whether there is a further planned phase to run.
+
+If this is **not** the end of the project, emit the normal between-phases summary:
 
 > Phase `N` completed.
 >
@@ -212,11 +219,15 @@ Emit a phase summary:
 >   · [N-3] <title> — skipped
 >   …
 
+Do **not** emit a `/clear` advisory between non-final phases — mid-plan context is intentionally carried forward.
+
+If this **is** the end of the project, emit the end-of-project summary block defined in Step 8 **in place of** the between-phases summary. (Don't emit both — the end-of-project block carries its own per-task list.)
+
 ---
 
-## Step 8 — Auto-propose next phase
+## Step 8 — Next-phase prompt or end-of-project summary
 
-If `state.phases["<N+1>"]` exists, ask the user to confirm — do not run it automatically:
+**If `state.phases["<N+1>"]` exists** (between phases), ask the user to confirm — do not run it automatically, and do not emit a `/clear` hint:
 
 > Run `/obr-phase <N+1>` next? (y/N)
 
@@ -224,9 +235,49 @@ Only `y` / `yes` (case-insensitive) triggers execution. On `y`, re-enter this co
 
 > Stopping after phase `N`. Run `/obr-phase <N+1>` when ready.
 
-If `state.phases["<N+1>"]` does not exist:
+**If `state.phases["<N+1>"]` does not exist** (end of project), emit the end-of-project summary block. This replaces any terse "all phases complete" line. Shape:
 
-> All planned phases are complete. Nothing further to do.
+```
+<2–3 sentence narrative paragraph>
+
+[1-1] <title> — <short sha>
+[1-2] <title> — <short sha>
+[2-1] <title> — <short sha>
+…
+
+Next: run /clear to reset context, then /obr-archive
+```
+
+Render rules, in order:
+
+1. **Gather inputs for the narrative.**
+   - `.oberon/PRD.md` body — read in full; if the body is large (rough guide: >6000 characters), truncate to the first ~6000 characters on a paragraph boundary before feeding it to the LLM.
+   - Task titles — for each entry in `state.completed_tasks`, use its `title` field (already captured from the task file's `# [N-M] <title>` heading in Step 5c). If `completed_tasks` is missing or empty, fall back to reading the first heading of every `.oberon/phases/<N>/<N-M>.md` whose per-task `status` is `completed`.
+   - The `state.completed_tasks` array itself — pass the full list to the LLM so it can reference specific shipped tasks.
+
+2. **Call the LLM to synthesize the narrative.** Keep the prompt small. Ask for exactly 2–3 sentences, plain prose, no bullets, no headings, no advisory line, no per-task list — just the narrative paragraph. The LLM's output is rendered as-is as the first block.
+
+3. **Render the per-task list deterministically (no LLM).** Read `state.completed_tasks`. Sort by splitting each entry's `task` string on `-` into two integers (`N`, `M`), then sort ascending by `N`, then ascending by `M`. Do **not** sort alphabetically (that mis-orders `10-1` before `2-1`); do **not** sort by commit order. Emit one line per entry with the exact shape:
+
+   ```
+   [N-M] <title> — <sha>
+   ```
+
+   — square brackets around the task id, the title verbatim from the entry's `title` field, a space, an em-dash (`—`, U+2014), a space, and the short SHA from the entry's `sha` field. No bullet, no leading checkmark, no trailing period.
+
+   If `state.completed_tasks` is missing or empty (e.g. every task was skipped), omit the list entirely — render the narrative, a blank line, then the advisory line. Never fabricate entries.
+
+4. **Render the advisory line** as the last line of the block, byte-identical to:
+
+   ```
+   Next: run /clear to reset context, then /obr-archive
+   ```
+
+   Lowercase `r` in `run`, slash-prefixed commands with no backticks, simple comma-separated clauses (no em-dash in the advisory itself), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only.
+
+Separate the three blocks (narrative, list, advisory) with a single blank line each. If the list is omitted, the narrative and advisory are separated by a single blank line.
+
+Do **not** emit `All planned phases are complete. Nothing further to do.` — that line is retired and fully replaced by the end-of-project summary block above.
 
 ---
 
