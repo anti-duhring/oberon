@@ -37,17 +37,41 @@ Check whether `.oberon/` already exists in the current working directory.
 
 ---
 
-## Step 2 — Resolve seed input
+## Step 2 — Resolve arguments
 
-The argument to `/obr-init` is `$ARGUMENTS`. Handle it as follows:
+The argument to `/obr-init` is `$ARGUMENTS`. Resolve it in two sub-steps: first pull out the optional `--name <slug>` override, then resolve whatever remains as seed input.
+
+### Step 2a — Extract `--name <slug>` (optional)
+
+Scan `$ARGUMENTS` for a `--name <slug>` token pair. The slug is the next whitespace-delimited token after `--name`; it is a single argument, not a quoted phrase.
+
+- **If `--name` is not present**: no override; `<name-override>` is unset. Proceed to Step 2b with `$ARGUMENTS` unchanged.
+- **If `--name` is present but no value follows it** (end of string, or followed by another `--flag`): abort with:
+
+  > `--name` requires a slug argument. Format rules: lowercase ASCII letters, digits, and hyphens only; shape `^[a-z0-9]+(-[a-z0-9]+)*$`; ≤ 40 characters.
+
+  Do not create `.oberon/`, do not write `state.json` or `PROJECT.md`, do not proceed.
+- **If `--name` is present with a value**: validate that value against the **Slug validation rules** in Step 4. User-supplied slugs are not truncated — they either satisfy the rules or are rejected. If the value does **not** satisfy the rules, abort with:
+
+  > `--name <slug>` is not a valid project slug. Format rules: lowercase ASCII letters, digits, and hyphens only; shape `^[a-z0-9]+(-[a-z0-9]+)*$`; ≤ 40 characters. No leading, trailing, or doubled hyphens.
+
+  Do not create `.oberon/`, do not write `state.json` or `PROJECT.md`, do not proceed.
+
+  If the value satisfies the rules, remember it as `<name-override>` and **remove the `--name <slug>` token pair from `$ARGUMENTS`** before Step 2b.
+
+When `<name-override>` is set, Step 4's derivation flow is skipped entirely — no LLM slug generation, no cwd-basename fallback, no last-resort constant. `<name-override>` is used as the final slug verbatim.
+
+### Step 2b — Resolve seed input
+
+Using the argument string with any `--name <slug>` token pair already stripped, resolve the seed:
 
 - **If empty**: no seed input. Proceed to Step 3 with no seed.
 - **If it looks like a path AND the file exists and is readable**: read the file; its contents are the seed.
-- **Otherwise**: treat the entire argument as an inline seed description.
+- **Otherwise**: treat the entire remaining argument as an inline seed description.
 
 A "looks like a path" heuristic: the argument has no spaces or contains `/`, `./`, `.md`, `.txt`, or similar, AND `test -f` returns true.
 
-Record which form was used — you'll need it for `state.json`.
+Record which form was used — you'll need it for `state.json`. `--name` composes with every seed mode (file path, inline, none): the seed still drives the grill in Step 3; only slug derivation in Step 4 is short-circuited.
 
 ---
 
@@ -90,7 +114,7 @@ The project slug is auto-generated. Never prompt the user for it.
 
 ### Slug validation rules (normative)
 
-These rules are the single source of truth for every slug handled by `/obr-init` — both the auto-generated path (this step) and the future `--name <slug>` override path. Any code path that produces or accepts a slug **must** apply these rules:
+These rules are the single source of truth for every slug handled by `/obr-init` — both the auto-generated path (this step) and the `--name <slug>` override path (Step 2a). Any code path that produces or accepts a slug **must** apply these rules:
 
 - **Character set:** lowercase ASCII letters, digits, and hyphens only.
 - **Shape:** matches the regex `^[a-z0-9]+(-[a-z0-9]+)*$` — one or more alphanumeric segments joined by single hyphens, no leading/trailing/doubled hyphens.
@@ -102,14 +126,17 @@ Call this section **"Slug validation rules"** and reference it from any other st
 
 ### Derivation flow
 
-Pick the first path that produces a slug matching the Slug validation rules:
+If Step 2a set `<name-override>`, **skip this entire derivation flow**. The slug is `<name-override>` verbatim; it has already been validated in Step 2a against the Slug validation rules above. Do not run LLM slug generation, do not fall back to cwd basename, do not emit a fallback note in Step 7 (the user picked the name; there is no "fallback" to disclose).
 
-1. **Seed path (LLM-generated).** If a seed is present (from Step 2, `type: file` or `type: inline`), generate a kebab-case slug from the seed content. The slug should reflect the project's purpose in 2–5 words. Apply the Slug validation rules, including word-boundary truncation. If the first draft does not validate even after truncation, fall through to step 2.
+Otherwise, pick the first path that produces a slug matching the Slug validation rules:
+
+1. **Seed path (LLM-generated).** If a seed is present (from Step 2b, `type: file` or `type: inline`), generate a kebab-case slug from the seed content. The slug should reflect the project's purpose in 2–5 words. Apply the Slug validation rules, including word-boundary truncation. If the first draft does not validate even after truncation, fall through to step 2.
 2. **cwd-basename fallback.** Take the basename of the current working directory. Lowercase it, strip non-ASCII, replace every run of non-alphanumeric characters with a single hyphen, and trim leading/trailing hyphens. Apply the Slug validation rules, including word-boundary truncation. If this still does not validate (e.g., basename is empty or purely non-ASCII after stripping), fall through to step 3.
 3. **Last-resort constant.** Use the literal slug `oberon-project`.
 
 Record which path produced the slug — you will need it for the confirmation message in Step 7 when a non-primary path was taken:
 
+- `<name-override>` supplied → override path; no fallback note needed.
 - Seed present and step 1 succeeded → primary path; no fallback note needed.
 - No seed at all → cwd-basename is the primary path; no fallback note needed.
 - Seed present but step 1 failed → note that LLM slug generation failed and the cwd basename was used instead.
@@ -203,6 +230,7 @@ Keep it tight. No long summary. No approval prompt.
 ## Errors to handle explicitly
 
 - `.oberon/` already exists → abort, see Step 1.
+- `--name` present with no value, or with a value that fails the Slug validation rules → abort, see Step 2a. Do not write `.oberon/`, `state.json`, or `PROJECT.md`.
 - Argument is a path but the file is unreadable → tell the user and stop (don't silently fall through to inline).
 - `obr-grill` skill unavailable → stop and tell the user to run `install.sh`.
 
