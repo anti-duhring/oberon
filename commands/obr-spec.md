@@ -2,7 +2,7 @@
 description: Generate a PRD for the initialized Oberon project. Runs the `obr-prd` skill using `.oberon/PROJECT.md` as input and writes `.oberon/PRD.md`.
 ---
 
-You are handling the `/obr-start` command for Oberon.
+You are handling the `/obr-spec` command for Oberon.
 
 ## Your job
 
@@ -53,6 +53,8 @@ Read `.oberon/PROJECT.md` in full. Then invoke the `obr-prd` skill with that con
 
 When `obr-prd` produces the PRD, capture the full document.
 
+**Do not stop here.** The PRD document is an intermediate artifact, not a final deliverable. The user's last input during `/obr-spec` is their final answer to `obr-prd`'s clarifying questions — everything after that is your job to complete autonomously. Proceed immediately to Steps 3–5 **in the same turn**, without waiting for user acknowledgement. Stopping after the PRD is generated leaves the project in an inconsistent state (no `.oberon/PRD.md`, `state.json` still in `grilled` phase) and breaks this command's contract.
+
 ---
 
 ## Step 3 — Write `.oberon/PRD.md`
@@ -87,4 +89,4 @@ Keep it tight.
 
 - Any precondition in Step 1 fails → hard stop with the specific message above.
 - `obr-prd` skill unavailable → stop and tell the user to run `install.sh`.
-- User aborts the PRD interview → do not write a partial PRD. Do not update `state.json`. Leave the project in `grilled` phase so `/obr-start` can be retried.
+- User aborts the PRD interview → do not write a partial PRD. Do not update `state.json`. Leave the project in `grilled` phase so `/obr-spec` can be retried.

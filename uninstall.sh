@@ -7,8 +7,8 @@ CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 SKILLS_DIR="$CLAUDE_DIR/skills"
 
-COMMANDS=("obr-init.md" "obr-start.md")
-SKILLS=("obr-grill" "obr-prd")
+COMMANDS=("obr-init.md" "obr-spec.md" "obr-plan.md" "obr-phase.md")
+SKILLS=("obr-grill" "obr-prd" "obr-plan" "obr-executor")
 
 log()  { printf '[oberon] %s\n' "$*"; }
 err()  { printf '[oberon] error: %s\n' "$*" >&2; }

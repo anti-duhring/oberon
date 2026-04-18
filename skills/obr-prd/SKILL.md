@@ -1,6 +1,6 @@
 ---
 name: obr-prd
-description: "Generate a Product Requirements Document (PRD) for an Oberon project. Reads `.oberon/PROJECT.md` as input, asks targeted clarifying questions to fill gaps, and writes a single `.oberon/PRD.md`. Used by the /obr-start command."
+description: "Generate a Product Requirements Document (PRD) for an Oberon project. Reads `.oberon/PROJECT.md` as input, asks targeted clarifying questions to fill gaps, and writes a single `.oberon/PRD.md`. Used by the /obr-spec command."
 user-invocable: true
 ---
 

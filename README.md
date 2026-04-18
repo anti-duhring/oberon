@@ -4,12 +4,14 @@ A meta-prompting, context-engineering, spec-driven development workflow for Clau
 
 Oberon turns "I want to build X" into a structured project with captured decisions and an implementation-ready PRD — via two slash commands.
 
-## Phase 1
+## Commands
 
-Two slash commands and three skills:
+The canonical chain is `/obr-init` → `/obr-spec` → `/obr-plan` → `/obr-phase N`:
 
 - `/obr-init` — initializes a project: runs a terse design grill, writes `.oberon/PROJECT.md` with captured decisions, and sets up state.
-- `/obr-start` — generates a PRD from the project decisions and writes it to `.oberon/PRD.md`.
+- `/obr-spec` — generates a PRD from the project decisions and writes it to `.oberon/PRD.md`.
+- `/obr-plan` — decomposes the PRD into a 1–4 phase plan, discovers verification commands, and writes per-task files under `.oberon/phases/N/N-M.md`.
+- `/obr-phase N` — executes every task in phase `N` sequentially via fresh executor subagents; `/obr-phase N skip` marks a phase skipped without running it.
 
 ## Install
 
@@ -40,10 +42,20 @@ Follow the prompts. Oberon creates `.oberon/PROJECT.md` and `.oberon/state.json`
 When the grill finishes:
 
 ```
-/obr-start
+/obr-spec
 ```
 
 This reads `PROJECT.md`, asks a few gap-filling questions, and writes `.oberon/PRD.md`.
+
+Then plan and execute:
+
+```
+/obr-plan            # propose phases + tasks, confirm verification commands
+/obr-phase 1         # run phase 1 — one executor subagent per task, one commit per task
+/obr-phase 2 skip    # mark a phase as skipped without running it
+```
+
+`/obr-phase N` refuses to run if phase `N-1` isn't `completed` or `skipped`, and hard-aborts if the working tree is dirty. It auto-resumes from the first non-completed task if re-run after a crash or abort.
 
 ## Layout
 
@@ -51,10 +63,14 @@ This reads `PROJECT.md`, asks a few gap-filling questions, and writes `.oberon/P
 .
 ├── commands/
 │   ├── obr-init.md
-│   └── obr-start.md
+│   ├── obr-spec.md
+│   ├── obr-plan.md
+│   └── obr-phase.md
 ├── skills/
-│   ├── obr-grill/    # terse interview skill used by /obr-init
-│   └── obr-prd/      # PRD generator used by /obr-start
+│   ├── obr-grill/     # terse interview skill used by /obr-init
+│   ├── obr-prd/       # PRD generator used by /obr-spec
+│   ├── obr-plan/      # phase + task generator used by /obr-plan
+│   └── obr-executor/  # per-task executor subagent spawned by /obr-phase
 ├── install.sh
 ├── uninstall.sh
 └── README.md

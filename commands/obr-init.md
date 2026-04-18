@@ -14,7 +14,7 @@ Initialize an Oberon project in the current working directory by:
 3. Running the **obr-grill** skill against that seed
 4. Writing `.oberon/PROJECT.md` and `.oberon/state.json`
 5. Appending `.oberon/` to `.gitignore` if one exists
-6. Telling the user to run `/obr-start`
+6. Telling the user to run `/obr-spec`
 
 Do **not** implement features, write PRDs, or do anything beyond the steps above.
 
@@ -26,7 +26,7 @@ Check if `.oberon/` already exists in the current working directory.
 
 If it exists, abort immediately with:
 
-> `.oberon/` already exists. Delete it to re-initialize, or run `/obr-start` to continue.
+> `.oberon/` already exists. Delete it to re-initialize, or run `/obr-spec` to continue.
 
 Do nothing else. Do not proceed.
 
@@ -55,6 +55,8 @@ Follow the skill's rules strictly: terse one-question-per-turn interview. Only g
 When the grill ends, the skill emits an Overview / Decisions / Open Questions block. Capture that block — you'll embed it into `PROJECT.md`.
 
 You also need a **project name**. If the seed or the grill didn't surface one, ask explicitly as the final grill question: "What should this project be called? (short name, used as the title of PROJECT.md)".
+
+**Do not stop here.** The grill output block is an intermediate artifact, not a final deliverable. The user's last input during `/obr-init` is their final grill answer — everything after that is your job to complete autonomously. Proceed immediately to Steps 4–6 **in the same turn**, without waiting for user acknowledgement. Stopping after the grill output leaves the project half-initialized (no `.oberon/` directory, no state file) and breaks this command's contract.
 
 ---
 
@@ -116,7 +118,7 @@ Print a short confirmation. Example:
 
 > Oberon initialized. Decisions captured in `.oberon/PROJECT.md`.
 >
-> Next: run `/obr-start` to generate the PRD.
+> Next: run `/obr-spec` to generate the PRD.
 
 Keep it tight. No long summary.
 

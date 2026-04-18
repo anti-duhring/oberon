@@ -7,8 +7,8 @@ CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 SKILLS_DIR="$CLAUDE_DIR/skills"
 
-COMMANDS=("obr-init.md" "obr-start.md")
-SKILLS=("obr-grill" "obr-prd")
+COMMANDS=("obr-init.md" "obr-spec.md" "obr-plan.md" "obr-phase.md")
+SKILLS=("obr-grill" "obr-prd" "obr-plan" "obr-executor")
 
 log()  { printf '[oberon] %s\n' "$*"; }
 err()  { printf '[oberon] error: %s\n' "$*" >&2; }
@@ -64,7 +64,7 @@ for skill in "${SKILLS[@]}"; do
 done
 
 if [ "$status" -eq 0 ]; then
-  log "done. Commands: /obr-init, /obr-start"
+  log "done. Commands: /obr-init, /obr-spec, /obr-plan, /obr-phase"
 else
   err "completed with errors"
 fi
