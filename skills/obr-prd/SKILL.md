@@ -39,7 +39,18 @@ Read PROJECT.md first. Then identify what's still missing for a good PRD:
 
 Ask only about gaps. If PROJECT.md already covers a topic, skip it.
 
-### Question format (lettered options for quick reply)
+### Question format (lettered options + recommendation)
+
+Every clarifying question must include a single recommendation line directly under its lettered options. This mirrors `obr-grill`'s recommendation style so the flow reads consistently across stages.
+
+Format rules (normative, match `obr-grill`):
+
+- Bold prefix: `**Recommend: <N><letter>**` — `<N>` is the question number, `<letter>` is the option letter (must be one of the letters listed on that question).
+- Separator: em-dash (`—`, U+2014) with a single space on each side.
+- Rationale: a single line. No multi-line paragraphs, no sub-bullets, no trailing period is required but the whole line must fit on one line.
+- Exactly one `Recommend` line per question. No trailing summary block at the end of the message — recommendations sit under each question, not in a summary section.
+
+**Drop questions without a defensible recommendation.** If no option is clearly better than the others on its merits, omit the entire question rather than emit a placeholder recommendation. `obr-prd` is expected to have a real recommendation for every question it asks.
 
 ```
 1. How will we measure success?
@@ -48,11 +59,15 @@ Ask only about gaps. If PROJECT.md already covers a topic, skip it.
    C. Error rate reduction
    D. Other: [specify]
 
+   **Recommend: 1B** — task-time reduction is the most directly observable signal for an internal tool.
+
 2. Target users?
    A. New users
    B. Existing users
    C. All users
    D. Admins only
+
+   **Recommend: 2C** — scope is broad enough that excluding any group would invalidate the launch.
 ```
 
 Users reply "1A, 2C" style. Indent options.
@@ -146,6 +161,8 @@ Before saving:
 
 - [ ] Read PROJECT.md
 - [ ] Asked only gap-filling questions (no redundancy with PROJECT.md)
+- [ ] Every emitted question had a `**Recommend: <N><letter>** — <one-line rationale>` line under its options; questions without a defensible recommendation were dropped, not placeholdered
+- [ ] No trailing recommendations summary block in the question message
 - [ ] Incorporated answers
 - [ ] User stories are small and specific
 - [ ] Functional requirements are numbered and unambiguous
