@@ -174,8 +174,8 @@ Insert exactly one blank line between the status block (header + per-phase block
 Emit exactly one Next advisory as the final line of output. The mapping is exhaustive — pick the first matching rule:
 
 1. `state.phase == "initialized"` → `Next: run /obr-spec`
-2. `state.phase == "grilled"` → `Next: run /obr-plan`
-3. `state.phase == "prd-done"` → `Next: run /obr-phase 1`
+2. `state.phase == "grilled"` → `Next: run /obr-spec`
+3. `state.phase == "prd-done"` → `Next: run /obr-plan`
 4. `state.phases` exists and every phase is `completed` or `skipped`, AND every task inside every non-skipped phase has status `completed` → `Next: run /obr-archive`
 5. `state.phase == "done"` → `Next: run /obr-archive`
 6. `state.phases` exists and at least one phase is still non-terminal → `Next: run /obr-phase N`, where `N` is the lowest-numbered phase whose `status` is neither `completed` nor `skipped`.
