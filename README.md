@@ -69,7 +69,7 @@ Then plan and execute:
 ├── skills/
 │   ├── obr-grill/     # terse interview skill used by /obr-init
 │   ├── obr-prd/       # PRD generator used by /obr-spec
-│   ├── obr-plan/      # phase + task generator used by /obr-plan
+│   ├── obr-planner/   # phase + task generator used by /obr-plan
 │   └── obr-executor/  # per-task executor subagent spawned by /obr-phase
 ├── install.sh
 ├── uninstall.sh

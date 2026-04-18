@@ -1,10 +1,10 @@
 ---
-name: obr-plan
+name: obr-planner
 description: "Turn `.oberon/PRD.md` into an executable, resumable plan. Proposes a 1–4 phase split grouping related user stories, discovers verification commands, and writes per-task markdown files under `.oberon/phases/N/N-M.md`. Used by the /obr-plan command."
 user-invocable: false
 ---
 
-# obr-plan
+# obr-planner
 
 Decompose a finished PRD into phases and tasks the executor can run. Input is `.oberon/PRD.md` plus `.oberon/state.json`; output is a set of `.oberon/phases/N/N-M.md` files and an updated `state.json`.
 

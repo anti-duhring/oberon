@@ -9,7 +9,7 @@ You are handling the `/obr-plan` command for Oberon — Phased Execution.
 Turn the completed PRD into a plan the executor can run. Steps:
 
 1. Validate preconditions
-2. Invoke the `obr-plan` skill interactively
+2. Invoke the `obr-planner` skill interactively
 3. Confirm files written and state updated
 4. Tell the user what's next
 
@@ -48,7 +48,7 @@ Hard errors abort the command. Do not silently proceed.
 
 ## Step 2 — Invoke the plan skill
 
-Invoke the `obr-plan` skill. It reads `.oberon/PRD.md`, proposes a phase split, discovers verification commands, and writes task files plus the updated `state.json`.
+Invoke the `obr-planner` skill. It reads `.oberon/PRD.md`, proposes a phase split, discovers verification commands, and writes task files plus the updated `state.json`.
 
 The skill runs two interactive rounds (phase split, verification commands). Let it drive. Do not answer on the user's behalf — wait for their reply. Do not pad the skill's questions with preamble.
 
@@ -82,5 +82,5 @@ Keep it tight. No long summary.
 ## Errors to handle explicitly
 
 - Any precondition in Step 1 fails → hard stop with the specific message above.
-- `obr-plan` skill unavailable → stop and tell the user to run `install.sh`.
+- `obr-planner` skill unavailable → stop and tell the user to run `install.sh`.
 - User aborts the plan interview → do not write partial task files. Do not update `state.json`. Leave the project in `prd-done` so `/obr-plan` can be retried. Remove any partially-written files under `.oberon/phases/` before returning.
