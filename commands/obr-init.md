@@ -11,11 +11,12 @@ Initialize an Oberon project in the current working directory by:
 
 1. Validating preconditions
 2. Resolving seed input (file path, inline text, or none)
-3. Running the **obr-grill** skill against that seed
-4. Deriving the project slug (auto-generated — never an interview question)
-5. Writing `.oberon/PROJECT.md` and `.oberon/state.json`
-6. Appending `.oberon/` to `.gitignore` if one exists
-7. Telling the user what's next
+3. Scanning the codebase (Explore subagent on non-empty repos; skipped on empty repos)
+4. Running the **obr-grill** skill against that seed
+5. Deriving the project slug (auto-generated — never an interview question)
+6. Writing `.oberon/PROJECT.md` (including the captured Codebase Context) and `.oberon/state.json`
+7. Appending `.oberon/` to `.gitignore` if one exists
+8. Telling the user what's next
 
 Do **not** implement features, write PRDs, or do anything beyond the steps above.
 
@@ -51,7 +52,7 @@ Scan `$ARGUMENTS` for a `--name <slug>` token pair. The slug is the next whitesp
   > `--name` requires a slug argument. Format rules: lowercase ASCII letters, digits, and hyphens only; shape `^[a-z0-9]+(-[a-z0-9]+)*$`; ≤ 40 characters.
 
   Do not create `.oberon/`, do not write `state.json` or `PROJECT.md`, do not proceed.
-- **If `--name` is present with a value**: validate that value against the **Slug validation rules** in Step 4. User-supplied slugs are not truncated — they either satisfy the rules or are rejected. If the value does **not** satisfy the rules, abort with:
+- **If `--name` is present with a value**: validate that value against the **Slug validation rules** in Step 5. User-supplied slugs are not truncated — they either satisfy the rules or are rejected. If the value does **not** satisfy the rules, abort with:
 
   > `--name <slug>` is not a valid project slug. Format rules: lowercase ASCII letters, digits, and hyphens only; shape `^[a-z0-9]+(-[a-z0-9]+)*$`; ≤ 40 characters. No leading, trailing, or doubled hyphens.
 
@@ -59,7 +60,7 @@ Scan `$ARGUMENTS` for a `--name <slug>` token pair. The slug is the next whitesp
 
   If the value satisfies the rules, remember it as `<name-override>` and **remove the `--name <slug>` token pair from `$ARGUMENTS`** before Step 2b.
 
-When `<name-override>` is set, Step 4's derivation flow is skipped entirely — no LLM slug generation, no cwd-basename fallback, no last-resort constant. `<name-override>` is used as the final slug verbatim.
+When `<name-override>` is set, Step 5's derivation flow is skipped entirely — no LLM slug generation, no cwd-basename fallback, no last-resort constant. `<name-override>` is used as the final slug verbatim.
 
 ### Step 2b — Resolve seed input
 
@@ -71,17 +72,59 @@ Using the argument string with any `--name <slug>` token pair already stripped, 
 
 A "looks like a path" heuristic: the argument has no spaces or contains `/`, `./`, `.md`, `.txt`, or similar, AND `test -f` returns true.
 
-Record which form was used — you'll need it for `state.json`. `--name` composes with every seed mode (file path, inline, none): the seed still drives the grill in Step 3; only slug derivation in Step 4 is short-circuited.
+Record which form was used — you'll need it for `state.json`. `--name` composes with every seed mode (file path, inline, none): the seed still drives the grill in Step 4; only slug derivation in Step 5 is short-circuited.
 
 ---
 
-## Step 3 — Run the grill
+## Step 3 — Scan the codebase
+
+Before invoking the grill, determine whether the repository is empty and, on non-empty repos, capture a structured codebase snapshot via the `Explore` subagent. The result is held in memory as `<codebase-context>` for Step 6's PROJECT.md write. The scan runs exactly once, here, during the initial `/obr-init`; no other Oberon command re-runs it.
+
+### Step 3a — Emptiness check (fixed allowlist)
+
+The repository is **empty** if and only if every tracked entry at its root is one of:
+
+- `.git/`
+- `LICENSE` (any extension, case-sensitive prefix `LICENSE`)
+- `README*` (e.g. `README`, `README.md`, `README.rst`)
+- `.gitignore`
+
+Anything else — any source file, any directory other than `.git/`, any config file, any lockfile — counts as **non-empty**. Use `git ls-files` when the directory is a git repository; otherwise list the directory contents directly. Do not apply any other heuristic.
+
+If the repository is empty:
+
+- Do **not** invoke the Explore subagent.
+- Set `<codebase-context>` to the literal string `_empty repo — no codebase to scan_`.
+- Proceed to Step 4.
+
+### Step 3b — Explore invocation (non-empty repos only)
+
+On non-empty repos, invoke the `Explore` subagent with:
+
+- **Thoroughness:** `medium`.
+- **Prompt:** ask the subagent for a structured codebase snapshot suitable for grounding product planning — the repo's purpose (as inferred from source), top-level layout, primary languages and frameworks, build/tooling, entry points, data / state shape, existing feature surface, and anything else a product planner needs to avoid asking about things already visible in source. Keep the prompt terse; the thoroughness level controls depth.
+
+Capture the subagent's report **verbatim** — no reformatting, no truncation beyond what Explore itself returns, no summarization. Set `<codebase-context>` to that verbatim report.
+
+### Step 3c — Explore failure
+
+If the Explore subagent fails, errors out, or returns nothing usable:
+
+- Do **not** hard-fail init. Scan errors never abort `/obr-init`.
+- Set `<codebase-context>` to a single italicized error line of the form `_codebase scan failed: <short reason>_`, where `<short reason>` is a terse description of what went wrong (e.g. `subagent unavailable`, `timeout`, `empty response`).
+- Proceed to Step 4.
+
+`<codebase-context>` is always set by the end of Step 3 — one of: the verbatim Explore report, the empty-repo placeholder, or the italicized error line.
+
+---
+
+## Step 4 — Run the grill
 
 Invoke the `obr-grill` skill, passing the seed content (or a note that there is no seed).
 
 Follow the skill's rules strictly: terse one-question-per-turn interview. Only grill gaps the seed doesn't already answer.
 
-**Do not ask the user for a project name.** The slug is derived automatically in Step 4 — it is never an interview question, never a grill branch, and never a standalone prompt.
+**Do not ask the user for a project name.** The slug is derived automatically in Step 5 — it is never an interview question, never a grill branch, and never a standalone prompt.
 
 ### Detecting the end of the grill
 
@@ -90,25 +133,25 @@ The grill is "over" when you have enough decisions to write PROJECT.md (every me
 At that point the user has just given their last answer. Do **not** ask another question. Do **not** wait for acknowledgement. The next thing you produce in the same turn is:
 
 1. The Overview / Decisions / Open Questions block (for display AND for embedding into PROJECT.md).
-2. The slug derivation in Step 4 and the tool calls in Steps 5–7 below.
+2. The slug derivation in Step 5 and the tool calls in Steps 6–8 below.
 
 ### Hard rule — no stopping after the grill block
 
 The grill's output block is **not a final message**. It is an intermediate handoff. If you emit the block and stop, the project is broken: no `.oberon/` directory, no `state.json`, `/obr-spec` will fail. This is a command contract violation.
 
 Every turn in which you emit the grill block **must also** contain (in this order, same turn):
-- Derive the slug per Step 4.
+- Derive the slug per Step 5.
 - `mkdir -p .oberon` (via Bash)
-- `Write .oberon/PROJECT.md`
+- `Write .oberon/PROJECT.md` (including the `## Codebase Context` section from Step 3)
 - `Write .oberon/state.json`
-- The `.gitignore` check from Step 6
-- The confirmation from Step 7
+- The `.gitignore` check from Step 7
+- The confirmation from Step 8
 
-If you find yourself about to end a turn right after emitting the Overview/Decisions block, **stop — you are bugging out**. Continue with Steps 4–7 in the same turn.
+If you find yourself about to end a turn right after emitting the Overview/Decisions block, **stop — you are bugging out**. Continue with Steps 5–8 in the same turn.
 
 ---
 
-## Step 4 — Derive the project slug
+## Step 5 — Derive the project slug
 
 The project slug is auto-generated. Never prompt the user for it.
 
@@ -126,7 +169,7 @@ Call this section **"Slug validation rules"** and reference it from any other st
 
 ### Derivation flow
 
-If Step 2a set `<name-override>`, **skip this entire derivation flow**. The slug is `<name-override>` verbatim; it has already been validated in Step 2a against the Slug validation rules above. Do not run LLM slug generation, do not fall back to cwd basename, do not emit a fallback note in Step 7 (the user picked the name; there is no "fallback" to disclose).
+If Step 2a set `<name-override>`, **skip this entire derivation flow**. The slug is `<name-override>` verbatim; it has already been validated in Step 2a against the Slug validation rules above. Do not run LLM slug generation, do not fall back to cwd basename, do not emit a fallback note in Step 8 (the user picked the name; there is no "fallback" to disclose).
 
 Otherwise, pick the first path that produces a slug matching the Slug validation rules:
 
@@ -134,7 +177,7 @@ Otherwise, pick the first path that produces a slug matching the Slug validation
 2. **cwd-basename fallback.** Take the basename of the current working directory. Lowercase it, strip non-ASCII, replace every run of non-alphanumeric characters with a single hyphen, and trim leading/trailing hyphens. Apply the Slug validation rules, including word-boundary truncation. If this still does not validate (e.g., basename is empty or purely non-ASCII after stripping), fall through to step 3.
 3. **Last-resort constant.** Use the literal slug `oberon-project`.
 
-Record which path produced the slug — you will need it for the confirmation message in Step 7 when a non-primary path was taken:
+Record which path produced the slug — you will need it for the confirmation message in Step 8 when a non-primary path was taken:
 
 - `<name-override>` supplied → override path; no fallback note needed.
 - Seed present and step 1 succeeded → primary path; no fallback note needed.
@@ -146,7 +189,7 @@ The chosen slug is the value of `<slug>` for the remainder of the command.
 
 ---
 
-## Step 5 — Create `.oberon/` and write files
+## Step 6 — Create `.oberon/` and write files
 
 Create the directory:
 
@@ -161,10 +204,26 @@ Structure:
 ```markdown
 # <slug>
 
-<Overview / Decisions / Open Questions block emitted by obr-grill, verbatim>
+## Overview
+
+<Overview paragraph(s) from the obr-grill output block, verbatim>
+
+## Codebase Context
+
+<codebase-context from Step 3, verbatim>
+
+## Decisions
+
+<Decisions bullets from the obr-grill output block, verbatim>
+
+## Open Questions
+
+<Open Questions bullets from the obr-grill output block, verbatim>
 ```
 
-The first-line `# <slug>` heading is the slug chosen in Step 4 — written verbatim, no rewording, no casing changes.
+The first-line `# <slug>` heading is the slug chosen in Step 5 — written verbatim, no rewording, no casing changes.
+
+The grill's output block emits `## Overview`, `## Decisions`, and `## Open Questions` as a single markdown block. Split that block around the Codebase Context: Overview goes first, then `## Codebase Context` holding `<codebase-context>` from Step 3 verbatim, then Decisions and Open Questions in their original order. The Codebase Context heading is literally `## Codebase Context` — title case, markdown H2, no emoji. The body is exactly `<codebase-context>` as set in Step 3 (verbatim Explore report, empty-repo placeholder, or italicized error line). Do not wrap it in additional fences, do not prepend or append anything.
 
 ### Write `.oberon/state.json`
 
@@ -184,13 +243,13 @@ Schema (v1):
 }
 ```
 
-`project_name` is the slug from Step 4, written verbatim. Use actual UTC timestamps (e.g. `2026-04-17T14:32:01Z`). Both `created_at` and `updated_at` are the same at init.
+`project_name` is the slug from Step 5, written verbatim. Use actual UTC timestamps (e.g. `2026-04-17T14:32:01Z`). Both `created_at` and `updated_at` are the same at init.
 
 Both writes happen in the same turn as the slug derivation — `state.json.project_name` and `PROJECT.md`'s first-line heading always agree.
 
 ---
 
-## Step 6 — `.gitignore`
+## Step 7 — `.gitignore`
 
 If `.gitignore` exists in the current working directory:
 
@@ -202,7 +261,7 @@ If `.gitignore` does **not** exist, do nothing. Do not create one.
 
 ---
 
-## Step 7 — Tell the user what's next
+## Step 8 — Tell the user what's next
 
 Print a short confirmation that announces the auto-generated slug. Do **not** ask for approval — no `[y/N]`, no pause, no waiting.
 
@@ -212,11 +271,11 @@ Format:
 >
 > Next: run /clear to reset context, then /obr-spec
 
-Substitute `<slug>` with the verbatim slug from Step 4.
+Substitute `<slug>` with the verbatim slug from Step 5.
 
 The advisory line is **normative**: lowercase `r` in `run`, slash-prefixed commands (no backticks), simple comma-separated clauses (no em-dash), no trailing period, single line. Do **not** invoke `/clear` automatically — the hint is advisory only. The confirmation is two lines total: one "what happened" line plus the advisory. No `--name` reminder, no multi-paragraph rationale, no extra emoji.
 
-If a non-primary derivation path was taken (per Step 4's recording), insert a single advisory line directly after the first line, before the `Next:` line:
+If a non-primary derivation path was taken (per Step 5's recording), insert a single advisory line directly after the first line, before the `Next:` line:
 
 - Seed was provided but LLM generation failed → `LLM slug generation failed; fell back to the current directory name.`
 - Seed was provided but both LLM generation and cwd basename failed → `LLM slug generation and cwd-basename fallback failed; used the last-resort slug.`
