@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "phase": "executing",
+  "created_at": "2026-04-15T09:00:00Z",
+  "updated_at": "2026-04-18T14:30:00Z",
+  "project_name": "fixture-project",
+  "source": {
+    "type": "inline",
+    "path": null
+  },
+  "verification_commands": [
+    "bats tests/bash tests/contracts"
+  ],
+  "phases": {
+    "1": {
+      "status": "in_progress",
+      "started_at": "2026-04-17T10:00:00Z",
+      "completed_at": null,
+      "tasks": {
+        "1-1": {
+          "status": "completed",
+          "started_at": "2026-04-17T10:00:00Z",
+          "completed_at": "2026-04-17T10:45:00Z",
+          "commit_sha": "7e80b0cda92b37001c147f306c802999f90637c4",
+          "rewrite_commit_sha": null,
+          "last_error": null,
+          "last_question": null
+        },
+        "1-2": {
+          "status": "pending",
+          "started_at": null,
+          "completed_at": null,
+          "commit_sha": null,
+          "rewrite_commit_sha": null,
+          "last_error": null,
+          "last_question": null
+        }
+      }
+    },
+    "2": {
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "tasks": {
+        "2-1": {
+          "status": "pending",
+          "started_at": null,
+          "completed_at": null,
+          "commit_sha": null,
+          "rewrite_commit_sha": null,
+          "last_error": null,
+          "last_question": null
+        }
+      }
+    }
+  },
+  "completed_tasks": [
+    {
+      "task": "1-1",
+      "title": "bats test infrastructure",
+      "sha": "7e80b0c"
+    }
+  ]
+}
