@@ -5,9 +5,13 @@ description: Terse, gap-only interview skill used by Oberon's /obr-init command 
 
 # obr-grill
 
-Interview the user to resolve every meaningful branch of a project's design tree, then emit structured output for `PROJECT.md`.
+Interview the user relentlessly about every aspect of this plan until both of you reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer. Each question should be as concise as possible but keeping the important parts,
 
-This is Oberon's forked variant of `grill-me`. It exists to keep the interview terse and suitable for non-technical or fast-moving users.
+Ask the questions one at a time, waiting for feedback on each question before continuing.
+
+If a question can be answered by exploring the codebase, explore the codebase instead.
+
+At the end, emit structured output for `PROJECT.md`.
 
 ---
 
