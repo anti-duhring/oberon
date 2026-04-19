@@ -78,6 +78,16 @@ Then plan and execute:
 └── README.md
 ```
 
+## Running tests
+
+Oberon ships with a vendored copy of [bats-core](https://github.com/bats-core/bats-core) under `tests/bats/`, so the test suite works on a fresh clone with no extra install. Tests are split into three buckets: `tests/bash/` (installer/shell behaviour), `tests/contracts/` (structural + schema checks), and `tests/e2e/` (full-flow integration). The fast tier — `bash` + `contracts` — is the default entry point and is also what the pre-commit hook runs:
+
+```bash
+./tests/bats/bin/bats tests/bash tests/contracts
+```
+
+If you prefer the bare `bats tests/bash tests/contracts` form (or have your own system-installed bats), put `tests/bats/bin` on your `PATH` or install bats locally — either works, the vendored copy is just a zero-setup default.
+
 ## Uninstall
 
 ```bash
