@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
-# Oberon uninstaller — removes symlinks from ~/.claude/ that point into this repo
+# Oberon uninstaller — removes only symlinks that point into this repo
+# from Claude skills, Codex skills, and the bin dir.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
-COMMANDS_DIR="$CLAUDE_DIR/commands"
-SKILLS_DIR="$CLAUDE_DIR/skills"
 
-COMMANDS=("obr-init.md" "obr-spec.md" "obr-plan.md" "obr-phase.md" "obr-archive.md")
-SKILLS=("obr-grill" "obr-prd" "obr-planner" "obr-executor")
+CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+BIN_DIR="${OBERON_BIN_DIR:-$HOME/.local/bin}"
+
+CLAUDE_SKILLS_DIR="$CLAUDE_DIR/skills"
+CODEX_SKILLS_DIR="$CODEX_DIR/skills"
+
+SKILLS=(
+  oberon-init
+  oberon-grill
+  oberon-sync
+  oberon-handoff
+  oberon-delete
+  write-a-skill
+)
 
 log()  { printf '[oberon] %s\n' "$*"; }
-err()  { printf '[oberon] error: %s\n' "$*" >&2; }
 
+# Remove dst only when it is a symlink whose target equals src.
 unlink_if_ours() {
   local src="$1"
   local dst="$2"
@@ -34,12 +45,12 @@ unlink_if_ours() {
   fi
 }
 
-for cmd in "${COMMANDS[@]}"; do
-  unlink_if_ours "$SRC_DIR/commands/$cmd" "$COMMANDS_DIR/$cmd"
+for skill in "${SKILLS[@]}"; do
+  src="$SRC_DIR/skills/$skill"
+  unlink_if_ours "$src" "$CLAUDE_SKILLS_DIR/$skill"
+  unlink_if_ours "$src" "$CODEX_SKILLS_DIR/$skill"
 done
 
-for skill in "${SKILLS[@]}"; do
-  unlink_if_ours "$SRC_DIR/skills/$skill" "$SKILLS_DIR/$skill"
-done
+unlink_if_ours "$SRC_DIR/bin/oberon" "$BIN_DIR/oberon"
 
 log "done."

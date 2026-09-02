@@ -3,13 +3,13 @@
 # uninstall.sh safety: removes only the symlinks it created, leaves foreign
 # files and foreign symlinks alone.
 #
-# Every test runs against an isolated CLAUDE_HOME inside BATS_TEST_TMPDIR so
-# the real ~/.claude/ is untouched.
+# Every test runs against isolated CLAUDE_HOME / CODEX_HOME / OBERON_BIN_DIR
+# inside BATS_TEST_TMPDIR so the real home roots are untouched.
 
 load 'helpers.bash'
 
 setup() {
-  setup_claude_home
+  setup_install_roots
 }
 
 # --- Behaviour: uninstall removes the symlinks install created -------------
@@ -19,16 +19,11 @@ setup() {
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
-  # Every entry uninstall.sh knows about must be gone.
-  for cmd in "${OBERON_UNINSTALL_COMMANDS[@]}"; do
-    [ ! -e "$COMMANDS_DIR/$cmd" ] && [ ! -L "$COMMANDS_DIR/$cmd" ]
-  done
-  for skill in "${OBERON_SKILLS[@]}"; do
-    [ ! -e "$SKILLS_DIR/$skill" ] && [ ! -L "$SKILLS_DIR/$skill" ]
-  done
+  assert_no_skill_links
+  assert_no_bin_link
 }
 
-@test "uninstall.sh runs cleanly on a fresh CLAUDE_HOME (nothing to remove)" {
+@test "uninstall.sh runs cleanly on a fresh root (nothing to remove)" {
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 }
@@ -42,72 +37,75 @@ setup() {
 
 # --- Safety: foreign symlinks survive --------------------------------------
 
-@test "uninstall.sh leaves a foreign symlink at a known path untouched" {
+@test "uninstall.sh leaves a foreign symlink at a known skill path untouched" {
   run_installer bash >/dev/null
 
   # Replace one of the install-owned symlinks with a symlink pointing
   # somewhere *outside* this repo. Uninstall must refuse to touch it.
-  local foreign_target="$BATS_TEST_TMPDIR/elsewhere.md"
-  echo "not ours" > "$foreign_target"
-  rm "$COMMANDS_DIR/obr-init.md"
-  ln -s "$foreign_target" "$COMMANDS_DIR/obr-init.md"
+  local foreign_target="$BATS_TEST_TMPDIR/elsewhere-skill"
+  mkdir -p "$foreign_target"
+  rm "$CLAUDE_SKILLS_DIR/oberon-init"
+  ln -s "$foreign_target" "$CLAUDE_SKILLS_DIR/oberon-init"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
   # Foreign symlink must survive with its original target.
-  [ -L "$COMMANDS_DIR/obr-init.md" ]
-  [ "$(readlink "$COMMANDS_DIR/obr-init.md")" = "$foreign_target" ]
-  [ -f "$foreign_target" ]
+  [ -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
+  [ "$(readlink "$CLAUDE_SKILLS_DIR/oberon-init")" = "$foreign_target" ]
+  [ -d "$foreign_target" ]
 }
 
-@test "uninstall.sh leaves a foreign symlink at a skill path untouched" {
+@test "uninstall.sh leaves a foreign symlink at the bin path untouched" {
   run_installer bash >/dev/null
 
-  local foreign_target="$BATS_TEST_TMPDIR/other-skill"
-  mkdir -p "$foreign_target"
-  rm "$SKILLS_DIR/obr-executor"
-  ln -s "$foreign_target" "$SKILLS_DIR/obr-executor"
+  local foreign_target="$BATS_TEST_TMPDIR/other-bin"
+  echo "not ours" > "$foreign_target"
+  rm "$BIN_DIR/oberon"
+  ln -s "$foreign_target" "$BIN_DIR/oberon"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
-  [ -L "$SKILLS_DIR/obr-executor" ]
-  [ "$(readlink "$SKILLS_DIR/obr-executor")" = "$foreign_target" ]
-  [ -d "$foreign_target" ]
+  [ -L "$BIN_DIR/oberon" ]
+  [ "$(readlink "$BIN_DIR/oberon")" = "$foreign_target" ]
+  [ -f "$foreign_target" ]
 }
 
 # --- Safety: regular files survive -----------------------------------------
 
 @test "uninstall.sh leaves a regular file at a known path untouched" {
-  mkdir -p "$COMMANDS_DIR"
-  echo "user's own content" > "$COMMANDS_DIR/obr-init.md"
+  mkdir -p "$CLAUDE_SKILLS_DIR"
+  echo "user's own content" > "$CLAUDE_SKILLS_DIR/oberon-init"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
-  [ -f "$COMMANDS_DIR/obr-init.md" ]
-  [ ! -L "$COMMANDS_DIR/obr-init.md" ]
-  grep -q "user's own content" "$COMMANDS_DIR/obr-init.md"
+  [ -f "$CLAUDE_SKILLS_DIR/oberon-init" ]
+  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
+  grep -q "user's own content" "$CLAUDE_SKILLS_DIR/oberon-init"
 }
 
-@test "uninstall.sh leaves unrelated files in CLAUDE_HOME untouched" {
+@test "uninstall.sh leaves unrelated files untouched" {
   run_installer bash >/dev/null
 
-  # Drop an unrelated file and an unrelated symlink into CLAUDE_HOME that
-  # uninstall.sh has no reason to know about.
-  echo "keep me" > "$COMMANDS_DIR/my-own-command.md"
+  # Drop an unrelated file and an unrelated symlink that uninstall.sh has no
+  # reason to know about.
+  echo "keep me" > "$CLAUDE_SKILLS_DIR/my-own-skill.md"
   local foreign_target="$BATS_TEST_TMPDIR/my-target"
   echo "external" > "$foreign_target"
-  ln -s "$foreign_target" "$COMMANDS_DIR/my-own-symlink.md"
+  ln -s "$foreign_target" "$CLAUDE_SKILLS_DIR/my-own-symlink"
+  echo "keep bin" > "$BIN_DIR/my-own-tool"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
-  [ -f "$COMMANDS_DIR/my-own-command.md" ]
-  grep -q "keep me" "$COMMANDS_DIR/my-own-command.md"
-  [ -L "$COMMANDS_DIR/my-own-symlink.md" ]
-  [ "$(readlink "$COMMANDS_DIR/my-own-symlink.md")" = "$foreign_target" ]
+  [ -f "$CLAUDE_SKILLS_DIR/my-own-skill.md" ]
+  grep -q "keep me" "$CLAUDE_SKILLS_DIR/my-own-skill.md"
+  [ -L "$CLAUDE_SKILLS_DIR/my-own-symlink" ]
+  [ "$(readlink "$CLAUDE_SKILLS_DIR/my-own-symlink")" = "$foreign_target" ]
+  [ -f "$BIN_DIR/my-own-tool" ]
+  grep -q "keep bin" "$BIN_DIR/my-own-tool"
 }
 
 # --- Shell-agnostic: suite works regardless of the invoking shell ----------
@@ -120,23 +118,41 @@ setup() {
   run zsh -c '
     set -e
     export CLAUDE_HOME="$1"
-    bash "$2"
-  ' -- "$CLAUDE_HOME" "$REPO_ROOT/uninstall.sh"
+    export CODEX_HOME="$2"
+    export OBERON_BIN_DIR="$3"
+    bash "$4"
+  ' -- "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR" "$REPO_ROOT/uninstall.sh"
   [ "$status" -eq 0 ]
-  [ ! -L "$COMMANDS_DIR/obr-init.md" ]
-  [ ! -L "$SKILLS_DIR/obr-executor" ]
+  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
+  [ ! -L "$CODEX_SKILLS_DIR/oberon-init" ]
+  [ ! -L "$BIN_DIR/oberon" ]
 }
 
-# --- Safety: uninstall respects a CLAUDE_HOME override ---------------------
+# --- Safety: uninstall respects env overrides ------------------------------
 
-@test "uninstall.sh respects a CLAUDE_HOME override and does not touch \$HOME" {
-  local custom="$BATS_TEST_TMPDIR/custom-claude"
-  CLAUDE_HOME="$custom" HOME="$BATS_TEST_TMPDIR/fake-home" \
+@test "uninstall.sh respects env overrides and does not touch \$HOME" {
+  local custom_claude="$BATS_TEST_TMPDIR/custom-claude"
+  local custom_codex="$BATS_TEST_TMPDIR/custom-codex"
+  local custom_bin="$BATS_TEST_TMPDIR/custom-bin"
+  local fake_home="$BATS_TEST_TMPDIR/fake-home"
+  mkdir -p "$fake_home"
+
+  CLAUDE_HOME="$custom_claude" \
+    CODEX_HOME="$custom_codex" \
+    OBERON_BIN_DIR="$custom_bin" \
+    HOME="$fake_home" \
     bash "$REPO_ROOT/install.sh"
 
-  CLAUDE_HOME="$custom" HOME="$BATS_TEST_TMPDIR/fake-home" \
+  CLAUDE_HOME="$custom_claude" \
+    CODEX_HOME="$custom_codex" \
+    OBERON_BIN_DIR="$custom_bin" \
+    HOME="$fake_home" \
     bash "$REPO_ROOT/uninstall.sh"
 
-  [ ! -L "$custom/commands/obr-init.md" ]
-  [ ! -d "$BATS_TEST_TMPDIR/fake-home/.claude" ]
+  [ ! -L "$custom_claude/skills/oberon-init" ]
+  [ ! -L "$custom_codex/skills/oberon-init" ]
+  [ ! -L "$custom_bin/oberon" ]
+  [ ! -d "$fake_home/.claude" ]
+  [ ! -d "$fake_home/.codex" ]
+  [ ! -d "$fake_home/.local" ]
 }

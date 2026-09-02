@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "project_id": "bad-project-0000",
+  "project_name": "Bad project",
+  "project_status": "bogus_status",
+  "created_at": "2026-09-02T12:00:00Z",
+  "updated_at": "2026-09-02T12:00:00Z",
+  "contributing_repos": "not-an-array",
+  "push_remote": null
+}

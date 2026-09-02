@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "project_id": "alt-120-reminders-7f3a",
+  "project_name": "ALT-120 reminder workflow",
+  "project_status": "active",
+  "created_at": "2026-09-02T12:00:00Z",
+  "updated_at": "2026-09-02T12:00:00Z",
+  "contributing_repos": [
+    {
+      "name": "svc-accounts-receivable",
+      "remote": "git@github.com:getalternative/svc-accounts-receivable.git",
+      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable"
+    }
+  ],
+  "push_remote": null
+}

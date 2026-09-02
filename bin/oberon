@@ -1,0 +1,631 @@
+#!/usr/bin/env bash
+# Oberon store CLI — mutates ~/.oberon (or $OBERON_HOME) project stores.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: oberon <command> [args]
+
+Commands:
+  home                         Print the store repo path
+  init --name NAME [--id ID] [--repo PATH]...
+                               Create a project store and commit it
+  list [--status active|closed|all]
+                               List projects (TSV: id status name)
+  resolve [--repo PATH]        Print project ids claiming a repo
+  path ID                      Print absolute store directory
+  repo-info PATH               Inspect a contributing repo (JSON)
+  attach ID --repo PATH        Add a contributing repo (idempotent)
+  set ID --status active|closed
+                               Update project status
+  commit ID -m MSG             Stage project dir and commit
+  delete ID --yes              Remove project dir and commit removal
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+now_utc() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+oberon_home() {
+  printf '%s\n' "${OBERON_HOME:-$HOME/.oberon}"
+}
+
+ensure_store_repo() {
+  local home
+  home="$(oberon_home)"
+  if [ ! -d "$home" ]; then
+    mkdir -p "$home"
+  fi
+  if [ ! -d "$home/.git" ]; then
+    git -C "$home" init -q
+  fi
+  # Local identity only when global is unset, so bare machines can commit.
+  if [ -z "$(git config --global user.name 2>/dev/null || true)" ] \
+    && [ -z "$(git -C "$home" config --local user.name 2>/dev/null || true)" ]; then
+    git -C "$home" config --local user.name "Oberon"
+  fi
+  if [ -z "$(git config --global user.email 2>/dev/null || true)" ] \
+    && [ -z "$(git -C "$home" config --local user.email 2>/dev/null || true)" ]; then
+    git -C "$home" config --local user.email "oberon@localhost"
+  fi
+}
+
+project_dir() {
+  local id="$1"
+  printf '%s/%s\n' "$(oberon_home)" "$id"
+}
+
+require_project() {
+  local id="$1"
+  local dir
+  dir="$(project_dir "$id")"
+  if [ ! -f "$dir/project.json" ]; then
+    printf 'unknown project: %s\n' "$id" >&2
+    exit 5
+  fi
+}
+
+abs_path() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$p"
+  else
+    (cd "$p" && pwd -P)
+  fi
+}
+
+slugify() {
+  # lowercase, non-alphanumerics → single '-', trim edges, collapse repeats
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+rand_hex4() {
+  # Prefer /dev/urandom; fall back to RANDOM.
+  if [ -r /dev/urandom ]; then
+    od -An -N2 -tx1 /dev/urandom | tr -d ' \n'
+  else
+    printf '%04x' $((RANDOM % 65536))
+  fi
+}
+
+repo_remote_url() {
+  local path="$1"
+  git -C "$path" remote get-url origin 2>/dev/null || true
+}
+
+repo_name_from_path() {
+  basename "$1"
+}
+
+bump_updated_at() {
+  local manifest="$1"
+  local ts
+  ts="$(now_utc)"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg ts "$ts" '.updated_at = $ts' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+}
+
+maybe_push() {
+  local id="$1"
+  local manifest
+  manifest="$(project_dir "$id")/project.json"
+  local remote
+  remote="$(jq -r '.push_remote // empty' "$manifest")"
+  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+    git -C "$(oberon_home)" push -q "$remote" HEAD || true
+  fi
+}
+
+store_commit() {
+  # Stage ONLY the project directory, commit if staged content differs.
+  # Returns 0 always for no-op (nothing staged). Prints nothing.
+  local id="$1"
+  local msg="$2"
+  local home
+  home="$(oberon_home)"
+  git -C "$home" add -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  git -C "$home" commit -q -m "$msg"
+  maybe_push "$id"
+}
+
+seed_decisions() {
+  cat >"$1" <<'EOF'
+# Decisions
+
+Load-bearing facts and numbered decisions for this project.
+
+<!-- Append decisions as D1, D2, … — never renumber. -->
+EOF
+}
+
+seed_progress() {
+  cat >"$1" <<'EOF'
+# Progress
+
+## Current state
+
+_Not started._
+
+<!-- Sync rewrites the Current state block; dated entries below are append-only. -->
+EOF
+}
+
+seed_handoff() {
+  cat >"$1" <<'EOF'
+# Handoff
+
+_No handoff yet._
+EOF
+}
+
+cmd_home() {
+  printf '%s\n' "$(oberon_home)"
+}
+
+cmd_init() {
+  local name="" id="" 
+  local -a repos=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)
+        [ $# -ge 2 ] || die "init: --name requires a value"
+        name="$2"; shift 2
+        ;;
+      --id)
+        [ $# -ge 2 ] || die "init: --id requires a value"
+        id="$2"; shift 2
+        ;;
+      --repo)
+        [ $# -ge 2 ] || die "init: --repo requires a value"
+        repos+=("$2"); shift 2
+        ;;
+      -h|--help)
+        usage; exit 0
+        ;;
+      *)
+        die "init: unknown argument: $1"
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "init: --name is required"
+
+  ensure_store_repo
+  local home
+  home="$(oberon_home)"
+
+  if [ -n "$id" ]; then
+    if [ -e "$(project_dir "$id")" ]; then
+      printf 'project id already taken: %s\n' "$id" >&2
+      exit 3
+    fi
+  else
+    local slug suffix attempt
+    slug="$(slugify "$name")"
+    [ -n "$slug" ] || die "init: --name produced an empty slug"
+    attempt=0
+    while :; do
+      attempt=$((attempt + 1))
+      if [ "$attempt" -gt 32 ]; then
+        die "init: could not mint a unique id after 32 attempts"
+      fi
+      suffix="$(rand_hex4)"
+      id="${slug}-${suffix}"
+      [ ! -e "$(project_dir "$id")" ] && break
+    done
+  fi
+
+  local dir ts
+  dir="$(project_dir "$id")"
+  ts="$(now_utc)"
+  mkdir -p "$dir"
+
+  # Build contributing_repos JSON array
+  local repos_json='[]'
+  local r abs remote rname entry
+  for r in "${repos[@]+"${repos[@]}"}"; do
+    if [ ! -d "$r/.git" ] && ! git -C "$r" rev-parse --git-dir >/dev/null 2>&1; then
+      die "init: not a git repo: $r"
+    fi
+    abs="$(abs_path "$r")"
+    remote="$(repo_remote_url "$abs")"
+    rname="$(repo_name_from_path "$abs")"
+    entry="$(jq -n \
+      --arg name "$rname" \
+      --arg remote "$remote" \
+      --arg path "$abs" \
+      '{name:$name, remote:(if $remote=="" then null else $remote end), path:$path}')"
+    repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$repos_json")"
+  done
+
+  jq -n \
+    --argjson schema 1 \
+    --arg project_id "$id" \
+    --arg project_name "$name" \
+    --arg project_status "active" \
+    --arg created_at "$ts" \
+    --arg updated_at "$ts" \
+    --argjson contributing_repos "$repos_json" \
+    '{
+      schema: $schema,
+      project_id: $project_id,
+      project_name: $project_name,
+      project_status: $project_status,
+      created_at: $created_at,
+      updated_at: $updated_at,
+      contributing_repos: $contributing_repos,
+      push_remote: null
+    }' >"$dir/project.json"
+
+  seed_decisions "$dir/DECISIONS.md"
+  seed_progress "$dir/PROGRESS.md"
+  seed_handoff "$dir/HANDOFF.md"
+
+  store_commit "$id" "oberon init $id"
+  printf '%s\n' "$id"
+}
+
+cmd_list() {
+  local status_filter="active"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)
+        [ $# -ge 2 ] || die "list: --status requires a value"
+        status_filter="$2"; shift 2
+        case "$status_filter" in
+          active|closed|all) ;;
+          *) die "list: --status must be active|closed|all" ;;
+        esac
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "list: unknown argument: $1" ;;
+    esac
+  done
+
+  local home
+  home="$(oberon_home)"
+  [ -d "$home" ] || return 0
+
+  local manifest id st name
+  # shellcheck disable=SC2012
+  for manifest in "$home"/*/project.json; do
+    [ -f "$manifest" ] || continue
+    id="$(jq -r '.project_id' "$manifest")"
+    st="$(jq -r '.project_status' "$manifest")"
+    name="$(jq -r '.project_name' "$manifest")"
+    if [ "$status_filter" = "all" ] || [ "$st" = "$status_filter" ]; then
+      printf '%s\t%s\t%s\n' "$id" "$st" "$name"
+    fi
+  done
+}
+
+cmd_resolve() {
+  local repo_path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ $# -ge 2 ] || die "resolve: --repo requires a value"
+        repo_path="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        # bare path accepted as convenience
+        if [ -z "$repo_path" ] && [ -d "$1" ]; then
+          repo_path="$1"; shift
+        else
+          die "resolve: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  if [ -z "$repo_path" ]; then
+    repo_path="."
+  fi
+  if [ ! -d "$repo_path" ]; then
+    printf 'not a directory: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+  if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'not a git repo: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+
+  local abs target_remote home
+  abs="$(abs_path "$repo_path")"
+  target_remote="$(repo_remote_url "$abs")"
+  home="$(oberon_home)"
+
+  local found=0
+  local manifest id
+  for manifest in "$home"/*/project.json; do
+    [ -f "$manifest" ] || continue
+    id="$(jq -r '.project_id' "$manifest")"
+
+    # Match remote URL first
+    if [ -n "$target_remote" ]; then
+      if jq -e --arg r "$target_remote" '
+          .contributing_repos // []
+          | map(.remote // "")
+          | index($r) != null
+        ' "$manifest" >/dev/null 2>&1; then
+        printf '%s\n' "$id"
+        found=1
+        continue
+      fi
+    fi
+
+    # Fall back to absolute path equality
+    if jq -e --arg p "$abs" '
+        .contributing_repos // []
+        | map(.path // "")
+        | index($p) != null
+      ' "$manifest" >/dev/null 2>&1; then
+      printf '%s\n' "$id"
+      found=1
+    fi
+  done
+
+  if [ "$found" -eq 0 ]; then
+    exit 4
+  fi
+}
+
+cmd_path() {
+  [ $# -ge 1 ] || die "path: ID required"
+  local id="$1"
+  require_project "$id"
+  project_dir "$id"
+}
+
+cmd_repo_info() {
+  [ $# -ge 1 ] || die "repo-info: PATH required"
+  local path="$1"
+  if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'not a git repo: %s\n' "$path" >&2
+    exit 5
+  fi
+  local abs remote branch sha dirty_raw dirty stat
+  abs="$(abs_path "$path")"
+  remote="$(repo_remote_url "$abs")"
+  branch="$(git -C "$abs" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'HEAD')"
+  sha="$(git -C "$abs" rev-parse HEAD 2>/dev/null || printf '')"
+  dirty_raw="$(git -C "$abs" status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty_raw" ]; then
+    dirty=true
+  else
+    dirty=false
+  fi
+  # --stat-style summary of working tree vs HEAD (empty when clean)
+  stat="$(git -C "$abs" diff --stat HEAD 2>/dev/null || true)"
+  if [ -z "$stat" ] && [ -n "$dirty_raw" ]; then
+    # untracked-only dirty tree: summarise porcelain
+    stat="$(printf '%s\n' "$dirty_raw")"
+  fi
+
+  jq -n \
+    --arg path "$abs" \
+    --arg remote "$remote" \
+    --arg branch "$branch" \
+    --arg sha "$sha" \
+    --argjson dirty "$dirty" \
+    --arg stat "$stat" \
+    '{
+      path: $path,
+      remote: (if $remote=="" then null else $remote end),
+      branch: $branch,
+      sha: $sha,
+      dirty: $dirty,
+      stat: $stat
+    }'
+}
+
+cmd_attach() {
+  local id="" repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ $# -ge 2 ] || die "attach: --repo requires a value"
+        repo="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "attach: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "attach: ID required"
+  [ -n "$repo" ] || die "attach: --repo is required"
+  require_project "$id"
+
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    die "attach: not a git repo: $repo"
+  fi
+
+  local abs remote rname manifest tmp
+  abs="$(abs_path "$repo")"
+  remote="$(repo_remote_url "$abs")"
+  rname="$(repo_name_from_path "$abs")"
+  manifest="$(project_dir "$id")/project.json"
+
+  # Idempotent: skip if same remote or same path already present
+  if jq -e --arg r "$remote" --arg p "$abs" '
+      .contributing_repos // []
+      | map(select(
+          (.path == $p) or
+          (($r != "") and (.remote == $r))
+        ))
+      | length > 0
+    ' "$manifest" >/dev/null 2>&1; then
+    bump_updated_at "$manifest"
+    store_commit "$id" "oberon attach $id (noop)"
+    return 0
+  fi
+
+  tmp="$(mktemp)"
+  jq --arg name "$rname" \
+     --arg remote "$remote" \
+     --arg path "$abs" \
+     --arg ts "$(now_utc)" '
+      .contributing_repos += [{
+        name: $name,
+        remote: (if $remote=="" then null else $remote end),
+        path: $path
+      }]
+      | .updated_at = $ts
+    ' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  store_commit "$id" "oberon attach $id +$rname"
+}
+
+cmd_set() {
+  local id="" status=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)
+        [ $# -ge 2 ] || die "set: --status requires a value"
+        status="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "set: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "set: ID required"
+  [ -n "$status" ] || die "set: --status is required"
+  case "$status" in
+    active|closed) ;;
+    *) die "set: --status must be active|closed" ;;
+  esac
+  require_project "$id"
+
+  local manifest tmp
+  manifest="$(project_dir "$id")/project.json"
+  tmp="$(mktemp)"
+  jq --arg st "$status" --arg ts "$(now_utc)" '
+      .project_status = $st | .updated_at = $ts
+    ' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  store_commit "$id" "oberon set $id status=$status"
+}
+
+cmd_commit() {
+  local id="" msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m)
+        [ $# -ge 2 ] || die "commit: -m requires a value"
+        msg="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "commit: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "commit: ID required"
+  [ -n "$msg" ] || die "commit: -m MSG required"
+  require_project "$id"
+
+  local home
+  home="$(oberon_home)"
+  # Stage first. If the project tree is already identical to HEAD, nothing is
+  # staged and we exit 0 without an empty commit (and without a spurious
+  # updated_at-only commit).
+  git -C "$home" add -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  bump_updated_at "$(project_dir "$id")/project.json"
+  store_commit "$id" "$msg"
+}
+
+cmd_delete() {
+  local id="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes) yes=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "delete: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "delete: ID required"
+  if [ "$yes" -ne 1 ]; then
+    printf 'delete requires --yes\n' >&2
+    exit 6
+  fi
+  require_project "$id"
+
+  local home
+  home="$(oberon_home)"
+  # Capture push_remote before removal
+  local remote
+  remote="$(jq -r '.push_remote // empty' "$(project_dir "$id")/project.json")"
+
+  git -C "$home" rm -rq -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  git -C "$home" commit -q -m "oberon delete $id"
+  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+    git -C "$home" push -q "$remote" HEAD || true
+  fi
+}
+
+main() {
+  if [ $# -lt 1 ]; then
+    usage >&2
+    exit 1
+  fi
+  local cmd="$1"; shift
+  case "$cmd" in
+    home)      cmd_home "$@" ;;
+    init)      cmd_init "$@" ;;
+    list)      cmd_list "$@" ;;
+    resolve)   cmd_resolve "$@" ;;
+    path)      cmd_path "$@" ;;
+    repo-info) cmd_repo_info "$@" ;;
+    attach)    cmd_attach "$@" ;;
+    set)       cmd_set "$@" ;;
+    commit)    cmd_commit "$@" ;;
+    delete)    cmd_delete "$@" ;;
+    -h|--help|help) usage; exit 0 ;;
+    *)
+      printf 'unknown command: %s\n' "$cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
