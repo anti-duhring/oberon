@@ -6,7 +6,7 @@ memory survives context compaction and session death.
 
 It is **not a plugin**. It installs as plain skills into each host's skill root
 (Claude Code, Codex; omp discovers those same roots). No Claude plugin, no host
-hooks, no slash-command bundle — just five skill directories and a small CLI
+hooks, no slash-command bundle — just six skill directories and a small CLI
 (ADR-0001).
 
 The store lives at `~/.oberon/<project-id>/`, **not** in your repo. That is
@@ -31,7 +31,7 @@ cd ~/dev/oberon
 ./install.sh
 ```
 
-Symlinks the five Oberon skills (plus `write-a-skill`) into
+Symlinks the six Oberon skills (plus `write-a-skill`) into
 `~/.claude/skills/` and `~/.codex/skills/`, and puts `oberon` on your PATH via
 `~/.local/bin`. Re-running is a no-op.
 
@@ -59,7 +59,20 @@ Decisions land as numbered `D1…Dn` entries in `DECISIONS.md`. Like init, grill
 model-invocable and **asks first**. If it offers a repo-level `CONTEXT.md` entry
 or an ADR under `docs/adr/`, that write is opt-in per offer.
 
-### 4. Work, then record — `/oberon-sync`
+### 4. Check where you are — `/oberon-status`
+
+Coming back to a feature, or before you write anything down:
+
+```
+/oberon-status
+```
+
+Read-only TLDR of every project whose manifest claims the current repo (or one
+id you pass). Current state, decision count, last progress heading, per-repo
+branch/sha/dirty, and whether a handoff exists. Safe to invoke any time — it
+never mutates the store and needs no confirmation. Model-invocable; **just runs**.
+
+### 5. Work, then record — `/oberon-sync`
 
 Build the feature as usual. When something durable changes (a decision, a
 milestone, a dead end):
@@ -76,7 +89,7 @@ tree is marked as a snapshot of unsaved work rather than a verifiable reference.
 `oberon-sync` is model-invocable and **just runs** — the agent may fire it on
 its own when it notices state worth keeping.
 
-### 5. Context running low — `/oberon-handoff`
+### 6. Context running low — `/oberon-handoff`
 
 ```
 /oberon-handoff
@@ -86,7 +99,7 @@ Rewrites `HANDOFF.md` so a fresh session can pick up cold: where you are, what
 matters, what not to redo. Overwrites the previous handoff; the rest of the
 store is untouched.
 
-### 6. Feature shipped — `/oberon-delete`
+### 7. Feature shipped — `/oberon-delete`
 
 ```
 /oberon-delete
@@ -102,6 +115,7 @@ explicit confirmation.
 |---|---|---|
 | `oberon-init` | yes | asks first |
 | `oberon-grill` | yes | asks first |
+| `oberon-status` | yes | runs directly (read-only) |
 | `oberon-sync` | yes | runs directly |
 | `oberon-handoff` | yes | (session continuity) |
 | `oberon-delete` | **no** | user-only |
@@ -112,6 +126,7 @@ explicit confirmation.
 |---|---|
 | `oberon-init` | Mint a project, create the store, offer the design grill |
 | `oberon-grill` | Continue / resume the design interview |
+| `oberon-status` | Read-only TLDR of project state (safe any time) |
 | `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |
@@ -182,6 +197,7 @@ use.
 | `oberon init --name NAME [--id ID] [--repo PATH]...` | mint id, create dir + 4 files, commit | `project_id` | exit 3 if `--id` is taken |
 | `oberon list [--status active\|closed\|all]` | one project per line | TSV `id<TAB>status<TAB>name` | — |
 | `oberon resolve [--repo PATH]` | ids whose manifest claims that repo (remote URL first, absolute path second) | one id per line | exit 4 if none |
+| `oberon status [ID]` | read-only TLDR payload for one id, or every project claiming the current repo | JSON array of project summaries | exit 4 if none claim the repo; exit 5 if `ID` unknown |
 | `oberon path ID` | absolute store directory | path | exit 5 if unknown |
 | `oberon repo-info PATH` | inspect a contributing repo | JSON `{path,remote,branch,sha,dirty,stat}` | exit 5 if not a repo |
 | `oberon attach ID --repo PATH` | add a contributing repo (idempotent), commit | — | exit 5 if unknown id |
@@ -201,7 +217,7 @@ Requires `git` and `jq`.
 
 What it does:
 
-1. Symlinks each of `skills/oberon-{init,grill,sync,handoff,delete}` and
+1. Symlinks each of `skills/oberon-{init,grill,status,sync,handoff,delete}` and
    `skills/write-a-skill` into **both**:
    - `${CLAUDE_HOME:-$HOME/.claude}/skills/`
    - `${CODEX_HOME:-$HOME/.codex}/skills/`

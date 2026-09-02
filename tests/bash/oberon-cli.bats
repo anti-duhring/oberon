@@ -253,3 +253,191 @@ oberon() {
   [[ "$output" == *"$marker"* ]]
   [[ "$output" == *"Delete Me"* ]] || [[ "$output" == *"$id"* ]]
 }
+
+@test "status <id> emits JSON array of length 1" {
+  local id
+  id="$(oberon init --name "Status One" --repo "$FAKE_REPO")"
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq 'length' <<<"$output")" -eq 1 ]
+  [ "$(jq -r '.[0].project_id' <<<"$output")" = "$id" ]
+  [ "$(jq -r '.[0].store_path' <<<"$output")" = "$OBERON_HOME/$id" ]
+}
+
+@test "status with no arg reports every project claiming current repo" {
+  local id1 id2
+  id1="$(oberon init --name "Claim A" --repo "$FAKE_REPO")"
+  id2="$(oberon init --name "Claim B" --repo "$FAKE_REPO")"
+
+  cd "$FAKE_REPO"
+  run oberon status
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq 'length' <<<"$output")" -eq 2 ]
+  # Both ids present (order not specified)
+  jq -e --arg a "$id1" --arg b "$id2" '
+    map(.project_id) | index($a) != null and index($b) != null
+  ' <<<"$output" >/dev/null
+}
+
+@test "status exits 4 when no project claims repo; unknown id exits 5" {
+  local orphan="${BATS_TEST_TMPDIR}/status-orphan"
+  mkdir -p "$orphan"
+  git -C "$orphan" init -q
+  git -C "$orphan" remote add origin "git@github.com:example/status-orphan.git"
+  oberon init --name "Elsewhere" >/dev/null
+
+  cd "$orphan"
+  run oberon status
+  [ "$status" -eq 4 ]
+
+  run oberon status "no-such-project-zzzz"
+  [ "$status" -eq 5 ]
+}
+
+@test "status decisions.count and last_ids for populated and empty DECISIONS.md" {
+  local id
+  id="$(oberon init --name "Decisions Shape" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  # Seed file is empty of D-headings
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].decisions.count' <<<"$output")" -eq 0 ]
+  [ "$(jq -c '.[0].decisions.last_ids' <<<"$output")" = "[]" ]
+
+  cat >"$dir/DECISIONS.md" <<'EOF'
+# Decisions
+
+### D1 — first
+body
+
+### D2 — second
+
+### D10 — tenth (numeric sort, not lexical)
+
+### D3 — third
+EOF
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].decisions.count' <<<"$output")" -eq 4 ]
+  [ "$(jq -c '.[0].decisions.last_ids' <<<"$output")" = '["D2","D3","D10"]' ]
+}
+
+@test "status progress.current_state extracts block text or null" {
+  local id
+  id="$(oberon init --name "Progress Shape" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  cat >"$dir/PROGRESS.md" <<'EOF'
+# Progress
+
+## Current state
+
+Design settled on the queue.
+Code lives on feature/x.
+
+## Journal
+
+### 2026-09-02 — first entry
+
+- note
+
+### 2026-09-02 — tag bump discharged
+
+- more
+EOF
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  local state
+  state="$(jq -r '.[0].progress.current_state' <<<"$output")"
+  [[ "$state" == *"Design settled on the queue."* ]]
+  [[ "$state" == *"Code lives on feature/x."* ]]
+  [[ "$state" != *"## Journal"* ]]
+  [[ "$state" != *"first entry"* ]]
+  [ "$(jq -r '.[0].progress.entry_count' <<<"$output")" -eq 2 ]
+  [ "$(jq -r '.[0].progress.last_entry_heading' <<<"$output")" = "### 2026-09-02 — tag bump discharged" ]
+
+  # No Current state header → null
+  cat >"$dir/PROGRESS.md" <<'EOF'
+# Progress
+
+### 2026-09-01 — lone entry
+EOF
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].progress.current_state' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].progress.current_state | type' <<<"$output")" = "null" ]
+}
+
+@test "status contributing_repos dirty true/false and missing path" {
+  local id
+  id="$(oberon init --name "Repos Dirty" --repo "$FAKE_REPO")"
+
+  # Clean
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].contributing_repos[0].dirty' <<<"$output")" = "false" ]
+  [ "$(jq -r '.[0].contributing_repos[0].dirty | type' <<<"$output")" = "boolean" ]
+  [ "$(jq -r '.[0].contributing_repos[0].exists' <<<"$output")" = "true" ]
+
+  # Dirty
+  echo "dirt" >>"$FAKE_REPO/README"
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].contributing_repos[0].dirty' <<<"$output")" = "true" ]
+  [ "$(jq -r '.[0].contributing_repos[0].dirty | type' <<<"$output")" = "boolean" ]
+
+  # Gone path
+  local gone="${BATS_TEST_TMPDIR}/gone-repo-path"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg p "$gone" --arg n "gone-repo" '
+    .contributing_repos = [{name:$n, remote:null, path:$p}]
+  ' "$OBERON_HOME/$id/project.json" >"$tmp"
+  mv "$tmp" "$OBERON_HOME/$id/project.json"
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+  [ "$(jq -r '.[0].contributing_repos[0].exists' <<<"$output")" = "false" ]
+  [ "$(jq -r '.[0].contributing_repos[0].branch' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].contributing_repos[0].sha' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].contributing_repos[0].dirty' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].contributing_repos[0].branch | type' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].contributing_repos[0].sha | type' <<<"$output")" = "null" ]
+  [ "$(jq -r '.[0].contributing_repos[0].dirty | type' <<<"$output")" = "null" ]
+}
+
+@test "status is side-effect free: store HEAD and updated_at unchanged" {
+  local id
+  id="$(oberon init --name "No Side Effects" --repo "$FAKE_REPO")"
+  local before_head after_head before_ts after_ts
+  before_head="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  before_ts="$(jq -r '.updated_at' "$OBERON_HOME/$id/project.json")"
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+
+  # Also from claiming cwd
+  cd "$FAKE_REPO"
+  run oberon status
+  [ "$status" -eq 0 ]
+  jq . <<<"$output" >/dev/null
+
+  after_head="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  after_ts="$(jq -r '.updated_at' "$OBERON_HOME/$id/project.json")"
+  [ "$before_head" = "$after_head" ]
+  [ "$before_ts" = "$after_ts" ]
+}

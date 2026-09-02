@@ -13,6 +13,7 @@ Commands:
   list [--status active|closed|all]
                                List projects (TSV: id status name)
   resolve [--repo PATH]        Print project ids claiming a repo
+  status [ID]                  Read-only project status TLDR (JSON array)
   path ID                      Print absolute store directory
   repo-info PATH               Inspect a contributing repo (JSON)
   attach ID --repo PATH        Add a contributing repo (idempotent)
@@ -103,6 +104,287 @@ repo_remote_url() {
 
 repo_name_from_path() {
   basename "$1"
+}
+
+
+# True when manifest claims repo via remote URL (preferred) or absolute path.
+manifest_claims_repo() {
+  local manifest="$1"
+  local abs="$2"
+  local remote="$3"
+
+  if [ -n "$remote" ]; then
+    if jq -e --arg r "$remote" '
+        .contributing_repos // []
+        | map(.remote // "")
+        | index($r) != null
+      ' "$manifest" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  jq -e --arg p "$abs" '
+      .contributing_repos // []
+      | map(.path // "")
+      | index($p) != null
+    ' "$manifest" >/dev/null 2>&1
+}
+
+# List project ids whose manifest claims the given repo path. Prints one id per
+# line. Exit 4 when none match (same contract as resolve). Exit 5 when path is
+# not a directory / not a git repo.
+resolve_claiming_ids() {
+  local repo_path="$1"
+  if [ ! -d "$repo_path" ]; then
+    printf 'not a directory: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+  if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'not a git repo: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+
+  local abs target_remote home
+  abs="$(abs_path "$repo_path")"
+  target_remote="$(repo_remote_url "$abs")"
+  home="$(oberon_home)"
+
+  local found=0
+  local manifest id
+  for manifest in "$home"/*/project.json; do
+    [ -f "$manifest" ] || continue
+    id="$(jq -r '.project_id' "$manifest")"
+    if manifest_claims_repo "$manifest" "$abs" "$target_remote"; then
+      printf '%s\n' "$id"
+      found=1
+    fi
+  done
+
+  if [ "$found" -eq 0 ]; then
+    exit 4
+  fi
+}
+
+# ISO-8601 UTC mtime for a file; empty string if unavailable.
+file_mtime_utc() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  local epoch=""
+  if epoch="$(stat -f %m "$f" 2>/dev/null)"; then
+    :
+  elif epoch="$(stat -c %Y "$f" 2>/dev/null)"; then
+    :
+  else
+    return 0
+  fi
+  date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || true
+}
+
+# decisions summary JSON: {count, last_ids} from D<n> entries in DECISIONS.md.
+# oberon-grill writes either a heading (`### D12 — …`) or a table row
+# (`| **D12** | … |`), so both anchors must count. Line-anchored so a prose
+# mention ("Supersedes D7") and the seeded `<!-- … D1, D2 … -->` comment do not.
+decisions_summary_json() {
+  local file="$1"
+  local -a ids=()
+  if [ -f "$file" ]; then
+    local d
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      ids+=("$d")
+    done < <(grep -oE '^(#{1,6}[[:space:]]+|\|[[:space:]]*)\*{0,2}D[0-9]+([^0-9]|$)' "$file" 2>/dev/null \
+               | grep -oE 'D[0-9]+' || true)
+  fi
+
+  # Unique + sort by numeric suffix ascending.
+  local sorted=""
+  if [ "${#ids[@]}" -gt 0 ]; then
+    sorted="$(printf '%s\n' "${ids[@]}" | sed 's/^D//' | sort -n | uniq | sed 's/^/D/')"
+  fi
+
+  local -a ordered=()
+  if [ -n "$sorted" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && ordered+=("$d")
+    done <<<"$sorted"
+  fi
+
+  local count="${#ordered[@]}"
+  local -a last=()
+  if [ "$count" -gt 0 ]; then
+    local start=0
+    if [ "$count" -gt 3 ]; then
+      start=$((count - 3))
+    fi
+    last=("${ordered[@]:$start}")
+  fi
+
+  local last_json
+  if [ "${#last[@]}" -eq 0 ]; then
+    last_json='[]'
+  else
+    last_json="$(printf '%s\n' "${last[@]}" | jq -R . | jq -s -c .)"
+  fi
+  jq -n -c --argjson count "$count" --argjson last_ids "$last_json" \
+    '{count:$count, last_ids:$last_ids}'
+}
+
+# progress summary JSON from PROGRESS.md.
+progress_summary_json() {
+  local file="$1"
+  local entry_count=0
+  local current_state=""
+  local has_current=0
+  local last_heading=""
+
+  if [ -f "$file" ]; then
+    if grep -qE '^## Current state[[:space:]]*$' "$file"; then
+      has_current=1
+      current_state="$(
+        awk '
+          /^## Current state[[:space:]]*$/ { p=1; next }
+          /^##+[[:space:]]/ { if (p) exit }
+          p { print }
+        ' "$file" | awk '
+          { lines[++n] = $0 }
+          END {
+            start = 1
+            while (start <= n && lines[start] ~ /^[[:space:]]*$/) start++
+            end = n
+            while (end >= start && lines[end] ~ /^[[:space:]]*$/) end--
+            for (i = start; i <= end; i++) print lines[i]
+          }
+        '
+      )"
+    fi
+
+    local line
+    while IFS= read -r line; do
+      entry_count=$((entry_count + 1))
+      last_heading="$line"
+    done < <(grep -E '^#{2,3}[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' "$file" 2>/dev/null || true)
+  fi
+
+  if [ "$has_current" -eq 0 ]; then
+    jq -n -c --argjson entry_count "$entry_count" --arg last "$last_heading" '
+      {
+        entry_count: $entry_count,
+        current_state: null,
+        last_entry_heading: (if $last == "" then null else $last end)
+      }'
+  else
+    jq -n -c --argjson entry_count "$entry_count" --arg state "$current_state" --arg last "$last_heading" '
+      {
+        entry_count: $entry_count,
+        current_state: $state,
+        last_entry_heading: (if $last == "" then null else $last end)
+      }'
+  fi
+}
+
+# handoff summary JSON from HANDOFF.md.
+handoff_summary_json() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    jq -n -c '{present:false, updated_at:null}'
+    return
+  fi
+  local ts
+  ts="$(file_mtime_utc "$file")"
+  jq -n -c --arg ts "$ts" '
+    {present:true, updated_at:(if $ts == "" then null else $ts end)}
+  '
+}
+
+# One contributing_repos element JSON for status.
+status_repo_json() {
+  local name="$1"
+  local path="$2"
+
+  if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    jq -n -c --arg name "$name" --arg path "$path" '
+      {name:$name, path:$path, exists:false, branch:null, sha:null, dirty:null}
+    '
+    return
+  fi
+
+  local abs branch sha dirty_raw dirty
+  abs="$(abs_path "$path")"
+  branch="$(git -C "$abs" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'HEAD')"
+  sha="$(git -C "$abs" rev-parse --short HEAD 2>/dev/null || printf '')"
+  dirty_raw="$(git -C "$abs" status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty_raw" ]; then
+    dirty=true
+  else
+    dirty=false
+  fi
+
+  jq -n -c \
+    --arg name "$name" \
+    --arg path "$path" \
+    --arg branch "$branch" \
+    --arg sha "$sha" \
+    --argjson dirty "$dirty" '
+      {name:$name, path:$path, exists:true, branch:$branch, sha:$sha, dirty:$dirty}
+    '
+}
+
+# Full status object for one project id (must exist).
+status_project_json() {
+  local id="$1"
+  local dir manifest
+  dir="$(project_dir "$id")"
+  manifest="$dir/project.json"
+
+  local project_id project_name project_status created_at updated_at store_path
+  project_id="$(jq -r '.project_id' "$manifest")"
+  project_name="$(jq -r '.project_name' "$manifest")"
+  project_status="$(jq -r '.project_status' "$manifest")"
+  created_at="$(jq -r '.created_at' "$manifest")"
+  updated_at="$(jq -r '.updated_at' "$manifest")"
+  store_path="$dir"
+
+  local decisions progress handoff
+  decisions="$(decisions_summary_json "$dir/DECISIONS.md")"
+  progress="$(progress_summary_json "$dir/PROGRESS.md")"
+  handoff="$(handoff_summary_json "$dir/HANDOFF.md")"
+
+  local repos_json='[]'
+  local n i name path entry
+  n="$(jq -r '.contributing_repos // [] | length' "$manifest")"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    name="$(jq -r --argjson i "$i" '.contributing_repos[$i].name // ""' "$manifest")"
+    path="$(jq -r --argjson i "$i" '.contributing_repos[$i].path // ""' "$manifest")"
+    entry="$(status_repo_json "$name" "$path")"
+    repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$repos_json")"
+    i=$((i + 1))
+  done
+
+  jq -n -c \
+    --arg project_id "$project_id" \
+    --arg project_name "$project_name" \
+    --arg project_status "$project_status" \
+    --arg created_at "$created_at" \
+    --arg updated_at "$updated_at" \
+    --arg store_path "$store_path" \
+    --argjson decisions "$decisions" \
+    --argjson progress "$progress" \
+    --argjson handoff "$handoff" \
+    --argjson contributing_repos "$repos_json" '
+      {
+        project_id: $project_id,
+        project_name: $project_name,
+        project_status: $project_status,
+        created_at: $created_at,
+        updated_at: $updated_at,
+        store_path: $store_path,
+        decisions: $decisions,
+        progress: $progress,
+        handoff: $handoff,
+        contributing_repos: $contributing_repos
+      }'
 }
 
 bump_updated_at() {
@@ -333,53 +615,45 @@ cmd_resolve() {
   if [ -z "$repo_path" ]; then
     repo_path="."
   fi
-  if [ ! -d "$repo_path" ]; then
-    printf 'not a directory: %s\n' "$repo_path" >&2
-    exit 5
-  fi
-  if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
-    printf 'not a git repo: %s\n' "$repo_path" >&2
-    exit 5
-  fi
+  resolve_claiming_ids "$repo_path"
+}
 
-  local abs target_remote home
-  abs="$(abs_path "$repo_path")"
-  target_remote="$(repo_remote_url "$abs")"
-  home="$(oberon_home)"
-
-  local found=0
-  local manifest id
-  for manifest in "$home"/*/project.json; do
-    [ -f "$manifest" ] || continue
-    id="$(jq -r '.project_id' "$manifest")"
-
-    # Match remote URL first
-    if [ -n "$target_remote" ]; then
-      if jq -e --arg r "$target_remote" '
-          .contributing_repos // []
-          | map(.remote // "")
-          | index($r) != null
-        ' "$manifest" >/dev/null 2>&1; then
-        printf '%s\n' "$id"
-        found=1
-        continue
-      fi
-    fi
-
-    # Fall back to absolute path equality
-    if jq -e --arg p "$abs" '
-        .contributing_repos // []
-        | map(.path // "")
-        | index($p) != null
-      ' "$manifest" >/dev/null 2>&1; then
-      printf '%s\n' "$id"
-      found=1
-    fi
+cmd_status() {
+  local id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "status: unknown argument: $1"
+        fi
+        ;;
+    esac
   done
 
-  if [ "$found" -eq 0 ]; then
-    exit 4
+  local -a ids=()
+  if [ -n "$id" ]; then
+    require_project "$id"
+    ids=("$id")
+  else
+    local resolved line
+    # Capture so exit 4/5 from resolve_claiming_ids propagates (process
+    # substitution would swallow the status under set -e).
+    resolved="$(resolve_claiming_ids ".")" || exit $?
+    while IFS= read -r line; do
+      [ -n "$line" ] && ids+=("$line")
+    done <<<"$resolved"
   fi
+
+  local out='[]'
+  local pid entry
+  for pid in "${ids[@]}"; do
+    entry="$(status_project_json "$pid")"
+    out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")"
+  done
+  printf '%s\n' "$out"
 }
 
 cmd_path() {
@@ -613,6 +887,7 @@ main() {
     init)      cmd_init "$@" ;;
     list)      cmd_list "$@" ;;
     resolve)   cmd_resolve "$@" ;;
+    status)    cmd_status "$@" ;;
     path)      cmd_path "$@" ;;
     repo-info) cmd_repo_info "$@" ;;
     attach)    cmd_attach "$@" ;;

@@ -16,6 +16,7 @@ SKILLS=(
   oberon-init
   oberon-grill
   oberon-sync
+  oberon-status
   oberon-handoff
   oberon-delete
   write-a-skill
