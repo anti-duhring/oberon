@@ -45,8 +45,8 @@ From inside a contributing repo (or any cwd; you can attach repos later):
 
 Oberon mints a `project_id`, creates `~/.oberon/<project-id>/` with the four
 store files (`project.json`, `DECISIONS.md`, `PROGRESS.md`, `HANDOFF.md`), and
-opens the design grill. `oberon-init` is model-invocable but **asks before
-running**.
+attaches the current repo. It then *offers* the design grill without starting it.
+`oberon-init` is model-invocable but **asks before running**.
 
 ### 3. Settle the design — `/oberon-grill`
 
@@ -68,7 +68,11 @@ milestone, a dead end):
 /oberon-sync
 ```
 
-Appends / refreshes `DECISIONS.md` and `PROGRESS.md` from the current session.
+Appends one dated entry to `PROGRESS.md` and rewrites its short "Current state"
+header. It never touches `DECISIONS.md` — that is grill's file — and never edits
+an earlier entry. Each entry is spined on real git evidence per contributing repo
+(branch, sha, dirty flag, `--stat` summary), and an entry taken against a dirty
+tree is marked as a snapshot of unsaved work rather than a verifiable reference.
 `oberon-sync` is model-invocable and **just runs** — the agent may fire it on
 its own when it notices state worth keeping.
 
@@ -106,9 +110,9 @@ explicit confirmation.
 
 | Skill | Role |
 |---|---|
-| `oberon-init` | Mint a project, create the store, start the design grill |
+| `oberon-init` | Mint a project, create the store, offer the design grill |
 | `oberon-grill` | Continue / resume the design interview |
-| `oberon-sync` | Update `DECISIONS.md` / `PROGRESS.md` from the current session |
+| `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |
 
