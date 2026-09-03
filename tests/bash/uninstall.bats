@@ -3,8 +3,8 @@
 # uninstall.sh safety: removes only the symlinks it created, leaves foreign
 # files and foreign symlinks alone.
 #
-# Every test runs against isolated CLAUDE_HOME / CODEX_HOME / OBERON_BIN_DIR
-# inside BATS_TEST_TMPDIR so the real home roots are untouched.
+# Every test runs against isolated AGENTS_HOME / CLAUDE_HOME / CODEX_HOME /
+# OBERON_BIN_DIR inside BATS_TEST_TMPDIR so the real home roots are untouched.
 
 load 'helpers.bash'
 
@@ -44,15 +44,15 @@ setup() {
   # somewhere *outside* this repo. Uninstall must refuse to touch it.
   local foreign_target="$BATS_TEST_TMPDIR/elsewhere-skill"
   mkdir -p "$foreign_target"
-  rm "$CLAUDE_SKILLS_DIR/oberon-init"
-  ln -s "$foreign_target" "$CLAUDE_SKILLS_DIR/oberon-init"
+  rm "$CLAUDE_SKILLS_DIR/oberon-grill"
+  ln -s "$foreign_target" "$CLAUDE_SKILLS_DIR/oberon-grill"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
   # Foreign symlink must survive with its original target.
-  [ -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
-  [ "$(readlink "$CLAUDE_SKILLS_DIR/oberon-init")" = "$foreign_target" ]
+  [ -L "$CLAUDE_SKILLS_DIR/oberon-grill" ]
+  [ "$(readlink "$CLAUDE_SKILLS_DIR/oberon-grill")" = "$foreign_target" ]
   [ -d "$foreign_target" ]
 }
 
@@ -76,14 +76,14 @@ setup() {
 
 @test "uninstall.sh leaves a regular file at a known path untouched" {
   mkdir -p "$CLAUDE_SKILLS_DIR"
-  echo "user's own content" > "$CLAUDE_SKILLS_DIR/oberon-init"
+  echo "user's own content" > "$CLAUDE_SKILLS_DIR/oberon-grill"
 
   run run_uninstaller bash
   [ "$status" -eq 0 ]
 
-  [ -f "$CLAUDE_SKILLS_DIR/oberon-init" ]
-  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
-  grep -q "user's own content" "$CLAUDE_SKILLS_DIR/oberon-init"
+  [ -f "$CLAUDE_SKILLS_DIR/oberon-grill" ]
+  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-grill" ]
+  grep -q "user's own content" "$CLAUDE_SKILLS_DIR/oberon-grill"
 }
 
 @test "uninstall.sh leaves unrelated files untouched" {
@@ -117,41 +117,48 @@ setup() {
   run_installer bash >/dev/null
   run zsh -c '
     set -e
-    export CLAUDE_HOME="$1"
-    export CODEX_HOME="$2"
-    export OBERON_BIN_DIR="$3"
-    bash "$4"
-  ' -- "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR" "$REPO_ROOT/uninstall.sh"
+    export AGENTS_HOME="$1"
+    export CLAUDE_HOME="$2"
+    export CODEX_HOME="$3"
+    export OBERON_BIN_DIR="$4"
+    bash "$5"
+  ' -- "$AGENTS_HOME" "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR" "$REPO_ROOT/uninstall.sh"
   [ "$status" -eq 0 ]
-  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-init" ]
-  [ ! -L "$CODEX_SKILLS_DIR/oberon-init" ]
+  [ ! -L "$AGENTS_SKILLS_DIR/oberon-grill" ]
+  [ ! -L "$CLAUDE_SKILLS_DIR/oberon-grill" ]
+  [ ! -L "$CODEX_SKILLS_DIR/oberon-grill" ]
   [ ! -L "$BIN_DIR/oberon" ]
 }
 
 # --- Safety: uninstall respects env overrides ------------------------------
 
 @test "uninstall.sh respects env overrides and does not touch \$HOME" {
+  local custom_agents="$BATS_TEST_TMPDIR/custom-agents"
   local custom_claude="$BATS_TEST_TMPDIR/custom-claude"
   local custom_codex="$BATS_TEST_TMPDIR/custom-codex"
   local custom_bin="$BATS_TEST_TMPDIR/custom-bin"
   local fake_home="$BATS_TEST_TMPDIR/fake-home"
   mkdir -p "$fake_home"
 
-  CLAUDE_HOME="$custom_claude" \
+  AGENTS_HOME="$custom_agents" \
+    CLAUDE_HOME="$custom_claude" \
     CODEX_HOME="$custom_codex" \
     OBERON_BIN_DIR="$custom_bin" \
     HOME="$fake_home" \
     bash "$REPO_ROOT/install.sh"
 
-  CLAUDE_HOME="$custom_claude" \
+  AGENTS_HOME="$custom_agents" \
+    CLAUDE_HOME="$custom_claude" \
     CODEX_HOME="$custom_codex" \
     OBERON_BIN_DIR="$custom_bin" \
     HOME="$fake_home" \
     bash "$REPO_ROOT/uninstall.sh"
 
-  [ ! -L "$custom_claude/skills/oberon-init" ]
-  [ ! -L "$custom_codex/skills/oberon-init" ]
+  [ ! -L "$custom_agents/skills/oberon-grill" ]
+  [ ! -L "$custom_claude/skills/oberon-grill" ]
+  [ ! -L "$custom_codex/skills/oberon-grill" ]
   [ ! -L "$custom_bin/oberon" ]
+  [ ! -d "$fake_home/.agents" ]
   [ ! -d "$fake_home/.claude" ]
   [ ! -d "$fake_home/.codex" ]
   [ ! -d "$fake_home/.local" ]

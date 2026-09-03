@@ -22,9 +22,10 @@ The single git repo at `~/.oberon` containing every project's store as a
 subdirectory. One history and one remote for all projects.
 
 **Project id**:
-A legible identifier minted once at init and never reused: a slug of the project
-name plus a short random suffix (`alt-120-reminders-7f3a`). Names the project's
-store directory, and is typed by hand to disambiguate two projects in one repo.
+A legible identifier minted once when the store is created — at the first decision an
+`oberon-grill` settles — and never reused: a slug of the project name plus a short random
+suffix (`alt-120-reminders-7f3a`). Names the project's store directory, and is typed by
+hand to disambiguate two projects in one repo.
 
 **Project status**:
 Whether a store is in the working set: `active` or `closed`. It describes the

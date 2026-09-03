@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Shared helpers for bash-tier bats tests.
 #
-# These helpers give each test private CLAUDE_HOME / CODEX_HOME / OBERON_BIN_DIR
-# under BATS_TEST_TMPDIR so the real ~/.claude, ~/.codex, and ~/.local/bin are
-# never touched, and expose the repo root as REPO_ROOT.
+# These helpers give each test private AGENTS_HOME / CLAUDE_HOME / CODEX_HOME /
+# OBERON_BIN_DIR under BATS_TEST_TMPDIR so the real ~/.agents, ~/.claude,
+# ~/.codex, and ~/.local/bin are never touched, and expose the repo root as
+# REPO_ROOT.
 
 # Resolve the repo root (two levels up from this file: tests/bash/).
 _oberon_tests_bash_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +13,6 @@ unset _oberon_tests_bash_dir
 
 # Canonical skill list, kept in sync with install.sh / uninstall.sh.
 OBERON_SKILLS=(
-  oberon-init
   oberon-grill
   oberon-sync
   oberon-status
@@ -21,17 +21,20 @@ OBERON_SKILLS=(
   write-a-skill
 )
 
-# setup_install_roots — create isolated Claude, Codex, and bin roots for the
-# current test. Exports CLAUDE_HOME, CODEX_HOME, OBERON_BIN_DIR, plus the
-# derived skill/bin paths install.sh and uninstall.sh write into.
+# setup_install_roots — create isolated Agents, Claude, Codex, and bin roots for
+# the current test. Exports AGENTS_HOME, CLAUDE_HOME, CODEX_HOME,
+# OBERON_BIN_DIR, plus the derived skill/bin paths install.sh and uninstall.sh
+# write into.
 setup_install_roots() {
+  export AGENTS_HOME="${BATS_TEST_TMPDIR}/agents-home"
   export CLAUDE_HOME="${BATS_TEST_TMPDIR}/claude-home"
   export CODEX_HOME="${BATS_TEST_TMPDIR}/codex-home"
   export OBERON_BIN_DIR="${BATS_TEST_TMPDIR}/bin"
+  export AGENTS_SKILLS_DIR="$AGENTS_HOME/skills"
   export CLAUDE_SKILLS_DIR="$CLAUDE_HOME/skills"
   export CODEX_SKILLS_DIR="$CODEX_HOME/skills"
   export BIN_DIR="$OBERON_BIN_DIR"
-  mkdir -p "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR"
+  mkdir -p "$AGENTS_HOME" "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR"
 }
 
 # Back-compat alias used by older test names in comments / muscle memory.
@@ -53,15 +56,15 @@ run_uninstaller() {
   "$shell_bin" "$REPO_ROOT/uninstall.sh"
 }
 
-# assert_skill_links — every OBERON_SKILLS entry is a correct symlink in both
-# Claude and Codex skill roots.
+# assert_skill_links — every OBERON_SKILLS entry is a correct symlink in the
+# Agents, Claude, and Codex skill roots.
 assert_skill_links() {
-  local skill
+  local skill root
   for skill in "${OBERON_SKILLS[@]}"; do
-    [ -L "$CLAUDE_SKILLS_DIR/$skill" ]
-    [ "$(readlink "$CLAUDE_SKILLS_DIR/$skill")" = "$REPO_ROOT/skills/$skill" ]
-    [ -L "$CODEX_SKILLS_DIR/$skill" ]
-    [ "$(readlink "$CODEX_SKILLS_DIR/$skill")" = "$REPO_ROOT/skills/$skill" ]
+    for root in "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR"; do
+      [ -L "$root/$skill" ]
+      [ "$(readlink "$root/$skill")" = "$REPO_ROOT/skills/$skill" ]
+    done
   done
 }
 
@@ -71,12 +74,13 @@ assert_bin_link() {
   [ "$(readlink "$BIN_DIR/oberon")" = "$REPO_ROOT/bin/oberon" ]
 }
 
-# assert_no_skill_links — every OBERON_SKILLS entry is gone from both roots.
+# assert_no_skill_links — every OBERON_SKILLS entry is gone from all roots.
 assert_no_skill_links() {
-  local skill
+  local skill root
   for skill in "${OBERON_SKILLS[@]}"; do
-    [ ! -e "$CLAUDE_SKILLS_DIR/$skill" ] && [ ! -L "$CLAUDE_SKILLS_DIR/$skill" ]
-    [ ! -e "$CODEX_SKILLS_DIR/$skill" ] && [ ! -L "$CODEX_SKILLS_DIR/$skill" ]
+    for root in "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR"; do
+      [ ! -e "$root/$skill" ] && [ ! -L "$root/$skill" ]
+    done
   done
 }
 
@@ -110,9 +114,12 @@ snapshot_tree() {
     done
 }
 
-# snapshot_install_state — stable snapshot of Claude, Codex, and bin roots.
+# snapshot_install_state — stable snapshot of Agents, Claude, Codex, and bin
+# roots.
 snapshot_install_state() {
   {
+    printf '### AGENTS_HOME\n'
+    snapshot_tree "$AGENTS_HOME"
     printf '### CLAUDE_HOME\n'
     snapshot_tree "$CLAUDE_HOME"
     printf '### CODEX_HOME\n'

@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# Oberon installer — symlinks skills into Claude + Codex skill roots and
-# bin/oberon onto PATH. No plugins, no hooks, no slash-command install.
+# Oberon installer — symlinks skills into the Agents, Claude, and Codex skill
+# roots and bin/oberon onto PATH. No plugins, no hooks, no slash-command install.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+AGENTS_DIR="${AGENTS_HOME:-$HOME/.agents}"
 CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 BIN_DIR="${OBERON_BIN_DIR:-$HOME/.local/bin}"
 
+# ~/.agents/skills is the cross-harness (omp-native) root; the Claude and Codex
+# user roots are opt-in per harness, so installing only there leaves the skills
+# invisible to agents that ship those sources disabled.
+AGENTS_SKILLS_DIR="$AGENTS_DIR/skills"
 CLAUDE_SKILLS_DIR="$CLAUDE_DIR/skills"
 CODEX_SKILLS_DIR="$CODEX_DIR/skills"
 
 SKILLS=(
-  oberon-init
   oberon-grill
   oberon-sync
   oberon-status
@@ -50,7 +54,7 @@ link() {
   log "link:  $dst -> $src"
 }
 
-mkdir -p "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$BIN_DIR"
+mkdir -p "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$BIN_DIR"
 
 status=0
 
@@ -61,6 +65,7 @@ for skill in "${SKILLS[@]}"; do
     status=1
     continue
   fi
+  link "$src" "$AGENTS_SKILLS_DIR/$skill" || status=1
   link "$src" "$CLAUDE_SKILLS_DIR/$skill" || status=1
   link "$src" "$CODEX_SKILLS_DIR/$skill" || status=1
 done
@@ -82,7 +87,7 @@ case ":${PATH}:" in
 esac
 
 if [ "$status" -eq 0 ]; then
-  log "done. Skills: oberon-init, oberon-grill, oberon-sync, oberon-status, oberon-handoff, oberon-delete (+ write-a-skill). CLI: oberon"
+  log "done. Skills: oberon-grill, oberon-sync, oberon-status, oberon-handoff, oberon-delete (+ write-a-skill). CLI: oberon"
 else
   err "completed with errors"
 fi

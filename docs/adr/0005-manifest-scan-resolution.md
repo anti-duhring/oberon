@@ -3,8 +3,9 @@
 Each store carries its own `~/.oberon/<project-id>/project.json`, which lists the project's
 contributing repos. Resolution scans those manifests. Every skill resolves in this order:
 explicit id argument → `OBERON_PROJECT` environment variable → manifest scan matched against
-the current repo. One match auto-selects, several match prompt, none is an error directing the
-user to `oberon-init`.
+the current repo. One match auto-selects, several match prompt. "None" is terminal for the
+read/record skills, which point at `oberon-grill`; for the grill itself it is the storeless
+start that ends in a mint (ADR-0015).
 
 Decided with Mateus, 2026-09-02.
 
@@ -37,5 +38,5 @@ Decided with Mateus, 2026-09-02.
   manifests — a cache, never the authority.
 - `.oberon` symlinks are decoration. Nothing reads them, so they may be named per project
   (`.oberon-<slug>`) or omitted entirely.
-- `oberon-init`'s "error if it already exists" becomes precise: it fails when the **id is
-  already taken**, not when some folder happens to be present.
+- The CLI's `oberon init` "error if it already exists" becomes precise: it fails when the **id
+  is already taken**, not when some folder happens to be present.

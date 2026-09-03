@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Oberon uninstaller — removes only symlinks that point into this repo
-# from Claude skills, Codex skills, and the bin dir.
+# from Agents skills, Claude skills, Codex skills, and the bin dir.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+AGENTS_DIR="${AGENTS_HOME:-$HOME/.agents}"
 CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 BIN_DIR="${OBERON_BIN_DIR:-$HOME/.local/bin}"
 
+AGENTS_SKILLS_DIR="$AGENTS_DIR/skills"
 CLAUDE_SKILLS_DIR="$CLAUDE_DIR/skills"
 CODEX_SKILLS_DIR="$CODEX_DIR/skills"
 
 SKILLS=(
-  oberon-init
   oberon-grill
   oberon-sync
   oberon-status
@@ -48,6 +49,7 @@ unlink_if_ours() {
 
 for skill in "${SKILLS[@]}"; do
   src="$SRC_DIR/skills/$skill"
+  unlink_if_ours "$src" "$AGENTS_SKILLS_DIR/$skill"
   unlink_if_ours "$src" "$CLAUDE_SKILLS_DIR/$skill"
   unlink_if_ours "$src" "$CODEX_SKILLS_DIR/$skill"
 done

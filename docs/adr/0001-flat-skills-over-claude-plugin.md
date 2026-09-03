@@ -4,7 +4,7 @@ Oberon must work in Claude Code, Codex, and omp. A Claude Code plugin would give
 `oberon:init`-style namespacing and hooks, but Codex does not read Claude plugins (it has
 its own `~/.codex/skills/` and an unrelated `~/.codex/plugins` format), so a plugin means a
 second separately-installed copy. We therefore keep plain `SKILL.md` directories with flat
-names (`oberon-init`, `oberon-grill`, …) in a single repo, symlinked into each host's skill
+names (`oberon-grill`, `oberon-status`, …) in a single repo, symlinked into each host's skill
 root — which is what v1's `install.sh` already did for `~/.claude/`.
 
 ## Considered Options
@@ -17,11 +17,13 @@ root — which is what v1's `install.sh` already did for `~/.claude/`.
 
 ## Consequences
 
-- The literal name `oberon:init` is unreachable: `:` is plugin-invocation syntax. Names are
-  `/oberon-init` (Claude), `oberon-init` (Codex), `/skill:oberon-init` (omp).
-- omp needs no install of its own. Its `claude` (priority 80) and `codex` (70) providers
-  discover the symlinked copies, and it de-duplicates by `realpath`, so linking into both
-  Claude and Codex roots surfaces one skill, not two (`omp://skills.md`).
+- The literal name `oberon:grill` is unreachable: `:` is plugin-invocation syntax. Names are
+  `/oberon-grill` (Claude), `oberon-grill` (Codex), `/skill:oberon-grill` (omp).
+- omp needs no plugin and no separate copy, but it does need its own symlink root:
+  `skills.enableClaudeUser` / `skills.enableCodexUser` are off by default, so
+  `~/.agents/skills/` is linked too — see ADR-0014, which supersedes the original claim
+  that omp discovers the Claude and Codex copies for free. Linking all three roots still
+  surfaces one skill because omp de-duplicates by `realpath` (`omp://skills.md`).
 - **No behaviour may depend on a hook.** Claude Code has `PreToolUse`, omp has its own hook
   system, Codex has none. Anything that must happen on every Oberon mutation — notably the
   auto-commit — belongs in a script the skill calls, not in a hook.

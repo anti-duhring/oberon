@@ -22,7 +22,7 @@ stop and tell the user to run `install.sh` from the Oberon repo — never fall b
 
 - One match → candidate for delete.
 - Several → list and require the user to pick **one** id; never delete several in one go.
-- None → nothing to delete; suggest `oberon list` / `oberon-init` as appropriate.
+- None → nothing to delete; suggest `oberon list` to see what exists.
 
 Verify with `oberon path <id>` (exit 5 → unknown id, stop).
 

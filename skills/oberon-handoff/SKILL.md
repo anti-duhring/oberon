@@ -21,7 +21,7 @@ stop and tell the user to run `install.sh` from the Oberon repo — never fall b
 
 - One match → proceed.
 - Several → prompt which id.
-- None → direct the user to `oberon-init`; stop.
+- None → nothing to hand off. Point at `oberon-grill`, which mints the store once a design decision settles. Stop.
 
 Optional user argument: what the **next** session should focus on — tailor the doc to that.
 

@@ -23,7 +23,7 @@ Call **once**. Do not prompt to disambiguate when several projects claim the rep
 
 ### Failures
 
-- Exit **4** (no id, no matches): no project claims this repo. Tell the user and point at `oberon-init`. Stop.
+- Exit **4** (no id, no matches): no project claims this repo. Tell the user and point at `oberon-grill` — it mints a store at the first settled decision. Stop.
 - Exit **5** (explicit id unknown): say the id is unknown. Stop.
 
 Stdout is always a JSON **array** (even for one project).

@@ -1,11 +1,11 @@
 ---
 name: oberon-grill
-description: Relentless one-question design interview for an existing Oberon project, after user confirmation. Settles decisions and load-bearing facts into the store's DECISIONS.md as D1…Dn while you talk. Use when the user wants to stress-test or pin down a feature's design, or says grill / design interview in an Oberon context. Never start a full interview unbidden.
+description: Relentless one-question design interview that ends in a durable Oberon store. Resolves the project claiming this repo, or mints one at the first settled decision — there is no separate init step. Settles decisions and load-bearing facts into the store's DECISIONS.md as D1…Dn while you talk. Use when the user wants to stress-test or pin down a feature's design, or says grill / design interview in an Oberon context. Never start a full interview unbidden.
 ---
 
 # oberon-grill
 
-Interview the user until the design tree is shared understanding. Write every settled decision and load-bearing fact into the store's `DECISIONS.md` **as it crystallises** — not batched at the end. Domain language is sharpened in the same pass. All store mutations go through `oberon`; never raw `git`, never hand-edit `project.json`.
+Interview the user until the design tree is shared understanding. Write every settled decision and load-bearing fact into the store's `DECISIONS.md` **as it crystallises** — not batched at the end. Domain language is sharpened in the same pass. This skill also **creates** the store: a project you can name is an *output* of the interview, so nothing has to exist before you start. All store mutations go through `oberon`; never raw `git`, never hand-edit `project.json`.
 
 ## The `oberon` CLI
 
@@ -13,7 +13,7 @@ Call `oberon` from `PATH`. Every store mutation goes through it. If the command 
 stop and tell the user to run `install.sh` from the Oberon repo — never fall back to raw
 `git` on the store or to hand-editing `project.json`.
 
-## Resolve the project
+## Resolve or create the project
 
 Same order every time (stop at the first that works):
 
@@ -23,25 +23,25 @@ Same order every time (stop at the first that works):
 
 Then:
 
-- **One id** → use it.
+- **One id** → use it; this is a resumed grill. Confirm the id and store path (`oberon path <id>`) before side effects.
 - **Several** → list them (`id`, status, name) and ask which.
-- **None** → tell the user to run `oberon-init` first; do not invent a store.
-
-Confirm the resolved id and store path (`oberon path <id>`) before side effects.
+- **None** → **do not stop, and do not mint yet.** Grill storeless and mint at the first settled decision (see [Mint the store](#mint-the-store-at-the-first-settled-decision)). Never invent a store path or a project id yourself.
 
 ## Confirm before starting
 
 Model-invocable, gated. Before the first grill question or any write:
 
-1. Name the project id and store path.
-2. Say you will run a one-question-at-a-time design interview and append settled items to `DECISIONS.md` in that store.
-3. Wait for explicit yes. On no, stop.
+1. Say you will run a one-question-at-a-time design interview.
+2. Name the destination:
+   - **Resumed project** → its id and store path, and that settled items get appended to that `DECISIONS.md`.
+   - **No project yet** → that no store exists, and that you will create one under `${OBERON_HOME:-$HOME/.oberon}/` at the first settled decision, confirming a project name at that moment.
+3. Wait for explicit yes. On no, stop — with no store created either way.
 
 ## Read seed context first
 
 Before Q1, read whatever already exists — do **not** re-ask settled ground:
 
-- Store: `DECISIONS.md`, `PROGRESS.md`, `HANDOFF.md`, `project.json` (via `oberon path <id>`).
+- Store, when a project resolved: `DECISIONS.md`, `PROGRESS.md`, `HANDOFF.md`, `project.json` (via `oberon path <id>`). Storeless start: skip this — there is nothing to read yet.
 - User-supplied seed (file path or inline description).
 - Contributing repos: layout, existing `CONTEXT.md` / `CONTEXT-MAP.md`, relevant code.
 
@@ -76,7 +76,7 @@ Number Q1, Q2, … so the user can refer back.
 
 ### Typical branches (depth-first; skip what seed already answered)
 
-1. What is it — one-line purpose (name usually already set at init).
+1. What is it — one-line purpose. On a storeless start this is also where the project's working name comes from.
 2. Who for — user type, scale, context of use.
 3. Scope in vs out for this iteration.
 4. Core flows — 1–3 primary journeys.
@@ -133,9 +133,47 @@ Opinionated: pick one word, list the rest under `_Avoid_`. Only project-specific
 
 ---
 
+## Mint the store (at the first settled decision)
+
+Only for a storeless start. The interview runs with no store until the **first** item settles —
+that is the moment the session starts having something to lose, so mint there. Never later:
+buffering a whole interview in the conversation is exactly the loss Oberon exists to prevent.
+Never earlier: the name should come from the design, not from a cold guess.
+
+In one turn, when the first decision or load-bearing fact settles:
+
+1. **Propose a working name** from what the interview just established — ≤ 6 words, ticket id
+   first if the conversation has one (`ALT-120 reminder workflow`). Ask the user to confirm or
+   replace it. One line, not a new grill branch.
+2. **Mint**, naming the contributing repo's worktree root:
+
+   ```bash
+   oberon init --name "<NAME>" --repo "<ABS_REPO_PATH>"
+   ```
+
+   Extra `--repo PATH` only for repos the user named. Pass `--id` only if the user insists on
+   one; exit 3 means that id is taken — say so and ask for another, never overwrite.
+3. **Report** the `project_id` the CLI prints and the store path (`oberon path <id>`). The four
+   store files come from the CLI; never create store directories or files yourself.
+4. **Write the settled item as `D1`** into that store's `DECISIONS.md` and commit it:
+
+   ```bash
+   oberon commit <id> -m "grill: D1 <short slug>"
+   ```
+
+Then continue the interview under the normal as-it-settles discipline. Mint once per project —
+a resumed grill or a second settled decision never re-mints.
+
+If the user ends the interview before anything settles, **no store exists**. That is correct:
+there is nothing to record and nothing to clean up.
+
+---
+
 ## Writing `DECISIONS.md` (as you go)
 
-Path: `$(oberon path <id>)/DECISIONS.md`.
+Path: `$(oberon path <id>)/DECISIONS.md` — which means a minted store. On a storeless start the
+first settled item triggers [the mint](#mint-the-store-at-the-first-settled-decision) and lands
+as `D1`; there is no other way to write decisions.
 
 **Append settled items immediately** after each resolved branch (or small cluster that is truly one decision). Do not wait for the end of the interview.
 
@@ -186,5 +224,6 @@ When the tree is resolved:
 
 1. Skim `DECISIONS.md` for holes or contradictions; fix only by appending new D/K numbers.
 2. Final `oberon commit <id> -m "grill: session complete"` if anything is still uncommitted.
-3. Brief close: count of new decisions/facts, store path, any deferred open questions. No Q&A transcript dump.
+3. Brief close: count of new decisions/facts, store path, any deferred open questions. No Q&A transcript dump. When this session minted the store, say so and give the `project_id` — the user has not seen it before.
 4. Optionally offer `oberon-sync` or `oberon-handoff` — do not auto-run them.
+5. If nothing settled, there is no store: say that plainly instead of inventing one.

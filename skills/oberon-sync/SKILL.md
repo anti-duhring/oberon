@@ -21,7 +21,7 @@ stop and tell the user to run `install.sh` from the Oberon repo — never fall b
 
 - One match → proceed.
 - Several → prompt which id.
-- None → direct the user to `oberon-init`; stop.
+- None → no store claims this repo; there is no progress to journal. Point at `oberon-grill`, which mints the store once a design decision settles. Stop.
 
 Store dir: `oberon path <id>`. Read `project.json` only via that path (or `cat` the file) for `contributing_repos` — do not rewrite the manifest here; use `oberon attach` if a repo is missing.
 

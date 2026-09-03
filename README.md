@@ -6,7 +6,7 @@ memory survives context compaction and session death.
 
 It is **not a plugin**. It installs as plain skills into each host's skill root
 (Claude Code, Codex; omp discovers those same roots). No Claude plugin, no host
-hooks, no slash-command bundle — just six skill directories and a small CLI
+hooks, no slash-command bundle — just five skill directories and a small CLI
 (ADR-0001).
 
 The store lives at `~/.oberon/<project-id>/`, **not** in your repo. That is
@@ -21,7 +21,7 @@ is what made a store unrecoverable when the link lived only inside the repo.
 ## Getting started
 
 Examples below use Claude Code's `/oberon-…` form. On Codex type the bare name
-(`oberon-init`); on omp type `/skill:oberon-init`. Same skill, three spellings.
+(`oberon-grill`); on omp type `/skill:oberon-grill`. Same skill, three spellings.
 
 ### 1. Install
 
@@ -31,35 +31,37 @@ cd ~/dev/oberon
 ./install.sh
 ```
 
-Symlinks the six Oberon skills (plus `write-a-skill`) into
+Symlinks the five Oberon skills (plus `write-a-skill`) into `~/.agents/skills/`,
 `~/.claude/skills/` and `~/.codex/skills/`, and puts `oberon` on your PATH via
 `~/.local/bin`. Re-running is a no-op.
 
-### 2. Start a feature — `/oberon-init`
+### 2. Start a feature — `/oberon-grill`
 
-From inside a contributing repo (or any cwd; you can attach repos later):
-
-```
-/oberon-init
-```
-
-Oberon mints a `project_id`, creates `~/.oberon/<project-id>/` with the four
-store files (`project.json`, `DECISIONS.md`, `PROGRESS.md`, `HANDOFF.md`), and
-attaches the current repo. It then *offers* the design grill without starting it.
-`oberon-init` is model-invocable but **asks before running**.
-
-### 3. Settle the design — `/oberon-grill`
+From inside a contributing repo:
 
 ```
 /oberon-grill
 ```
 
-Continue or resume the interview until the load-bearing decisions are written.
-Decisions land as numbered `D1…Dn` entries in `DECISIONS.md`. Like init, grill is
-model-invocable and **asks first**. If it offers a repo-level `CONTEXT.md` entry
-or an ADR under `docs/adr/`, that write is opt-in per offer.
+There is **no init step**. Grill is the entry point: it asks first, then runs a
+one-question-at-a-time design interview. The store does not exist yet, because a
+project you can name is an *output* of that interview, not a prerequisite
+(ADR-0015).
 
-### 4. Check where you are — `/oberon-status`
+The **first settled decision** mints it: grill proposes a working project name
+from what you just agreed, confirms it in one line, calls `oberon init`, and
+writes that decision as `D1`. From there every settled item is appended to
+`DECISIONS.md` and committed as it crystallises, so a session that dies at Q20
+costs you one question, not twenty. Re-invoking `/oberon-grill` in a repo that
+already has a store resumes that store instead of minting a second one.
+
+If you end the interview before anything settles, **no store is created** —
+nothing to clean up.
+
+If grill offers a repo-level `CONTEXT.md` entry or an ADR under `docs/adr/`, that
+write is opt-in per offer, and it is the only thing Oberon puts in your PR.
+
+### 3. Check where you are — `/oberon-status`
 
 Coming back to a feature, or before you write anything down:
 
@@ -72,7 +74,7 @@ id you pass). Current state, decision count, last progress heading, per-repo
 branch/sha/dirty, and whether a handoff exists. Safe to invoke any time — it
 never mutates the store and needs no confirmation. Model-invocable; **just runs**.
 
-### 5. Work, then record — `/oberon-sync`
+### 4. Work, then record — `/oberon-sync`
 
 Build the feature as usual. When something durable changes (a decision, a
 milestone, a dead end):
@@ -89,7 +91,7 @@ tree is marked as a snapshot of unsaved work rather than a verifiable reference.
 `oberon-sync` is model-invocable and **just runs** — the agent may fire it on
 its own when it notices state worth keeping.
 
-### 6. Context running low — `/oberon-handoff`
+### 5. Context running low — `/oberon-handoff`
 
 ```
 /oberon-handoff
@@ -99,7 +101,7 @@ Rewrites `HANDOFF.md` so a fresh session can pick up cold: where you are, what
 matters, what not to redo. Overwrites the previous handoff; the rest of the
 store is untouched.
 
-### 7. Feature shipped — `/oberon-delete`
+### 6. Feature shipped — `/oberon-delete`
 
 ```
 /oberon-delete
@@ -113,8 +115,7 @@ explicit confirmation.
 
 | Skill | Model may start it? | Gate |
 |---|---|---|
-| `oberon-init` | yes | asks first |
-| `oberon-grill` | yes | asks first |
+| `oberon-grill` | yes | asks first (and mints the store at the first decision) |
 | `oberon-status` | yes | runs directly (read-only) |
 | `oberon-sync` | yes | runs directly |
 | `oberon-handoff` | yes | (session continuity) |
@@ -124,8 +125,7 @@ explicit confirmation.
 
 | Skill | Role |
 |---|---|
-| `oberon-init` | Mint a project, create the store, offer the design grill |
-| `oberon-grill` | Continue / resume the design interview |
+| `oberon-grill` | Design interview; mints the store at the first settled decision, resumes an existing one |
 | `oberon-status` | Read-only TLDR of project state (safe any time) |
 | `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
@@ -133,16 +133,20 @@ explicit confirmation.
 
 ### Invocation names by host
 
-| Host | Example (init) |
+| Host | Example (grill) |
 |---|---|
-| Claude Code | `/oberon-init` |
-| Codex | `oberon-init` |
-| omp | `/skill:oberon-init` |
+| Claude Code | `/oberon-grill` |
+| Codex | `oberon-grill` |
+| omp | `/skill:oberon-grill` |
 
-omp's `claude` and `codex` skill providers discover the symlinked copies under
-`~/.claude/skills/` and `~/.codex/skills/` automatically and de-duplicate by
-`realpath`, so linking both roots surfaces **one** skill — there is no separate
-omp install path.
+omp discovers the copies under `~/.agents/skills/` through its always-on
+`agents` provider (`skills.enableAgentsUser`, default on). Its `claude` and
+`codex` user providers are opt-in — `skills.enableClaudeUser` and
+`skills.enableCodexUser` default to off — so linking only `~/.claude/skills/`
+and `~/.codex/skills/` leaves Oberon invisible to omp. That is why `install.sh`
+links the `~/.agents/skills/` root too; omp de-duplicates by `realpath`, so all
+three links still surface **one** skill. Check with
+`omp config get skills.enableClaudeUser`.
 
 ## Store layout
 
@@ -194,7 +198,7 @@ use.
 | Command | Behaviour | Output | Failure |
 |---|---|---|---|
 | `oberon home` | print store repo path | path | — |
-| `oberon init --name NAME [--id ID] [--repo PATH]...` | mint id, create dir + 4 files, commit | `project_id` | exit 3 if `--id` is taken |
+| `oberon init --name NAME [--id ID] [--repo PATH]...` | mint id, create dir + 4 files, commit — called by `oberon-grill`, not by the user | `project_id` | exit 3 if `--id` is taken |
 | `oberon list [--status active\|closed\|all]` | one project per line | TSV `id<TAB>status<TAB>name` | — |
 | `oberon resolve [--repo PATH]` | ids whose manifest claims that repo (remote URL first, absolute path second) | one id per line | exit 4 if none |
 | `oberon status [ID]` | read-only TLDR payload for one id, or every project claiming the current repo | JSON array of project summaries | exit 4 if none claim the repo; exit 5 if `ID` unknown |
@@ -217,8 +221,9 @@ Requires `git` and `jq`.
 
 What it does:
 
-1. Symlinks each of `skills/oberon-{init,grill,status,sync,handoff,delete}` and
-   `skills/write-a-skill` into **both**:
+1. Symlinks each of `skills/oberon-{grill,status,sync,handoff,delete}` and
+   `skills/write-a-skill` into **all three**:
+   - `${AGENTS_HOME:-$HOME/.agents}/skills/` (omp / cross-harness native root)
    - `${CLAUDE_HOME:-$HOME/.claude}/skills/`
    - `${CODEX_HOME:-$HOME/.codex}/skills/`
 2. Symlinks `bin/oberon` into `${OBERON_BIN_DIR:-$HOME/.local/bin}` (creates the
@@ -232,13 +237,15 @@ Env overrides:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `AGENTS_HOME` | `$HOME/.agents` | Cross-harness skill root omp reads by default (skills under `skills/`) |
 | `CLAUDE_HOME` | `$HOME/.claude` | Claude Code config root (skills under `skills/`) |
 | `CODEX_HOME` | `$HOME/.codex` | Codex config root (skills under `skills/`) |
 | `OBERON_BIN_DIR` | `$HOME/.local/bin` | Where the `oberon` CLI symlink lands |
 | `OBERON_HOME` | `$HOME/.oberon` | Store repo root (used by the CLI, not the installer) |
 
-Nothing is installed into omp itself, and nothing is registered as a Claude
-plugin or a host hook.
+Nothing is registered as a Claude plugin or a host hook; the only omp-side
+footprint is the `~/.agents/skills/` symlinks, which omp reads with no config
+change.
 
 ### Uninstall
 
@@ -246,9 +253,9 @@ plugin or a host hook.
 ./uninstall.sh
 ```
 
-Removes only symlinks that point into this repo, across both skill roots and the
-bin dir. Unrelated files are left untouched. The same `CLAUDE_HOME` /
-`CODEX_HOME` / `OBERON_BIN_DIR` overrides apply.
+Removes only symlinks that point into this repo, across all three skill roots
+and the bin dir. Unrelated files are left untouched. The same `AGENTS_HOME` /
+`CLAUDE_HOME` / `CODEX_HOME` / `OBERON_BIN_DIR` overrides apply.
 
 ## Running tests
 
