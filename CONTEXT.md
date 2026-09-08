@@ -43,6 +43,13 @@ contributing repos it claims. Each project owns exactly one; together they are
 the only authority on which projects are live in a given repo.
 _Avoid_: registry, index (a rebuildable cache may exist, but is never the authority)
 
+**Test recipe**:
+The reusable part of a store's `TEST.md`: which suites cover this project, the
+verbatim commands and their `cwd`, the prerequisites, and the commands not to run.
+Distinct from the *run record* — the last results and capped run history that sit
+below it in the same file and are rewritten each `oberon-test`.
+_Avoid_: test plan, test docs, QA notes
+
 **Skill**:
 A `SKILL.md` directory discovered by an agent host and invocable by name. The
 portable unit of Oberon behaviour.

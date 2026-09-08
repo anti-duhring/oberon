@@ -6,7 +6,7 @@ memory survives context compaction and session death.
 
 It is **not a plugin**. It installs as plain skills into each host's skill root
 (Claude Code, Codex; omp discovers those same roots). No Claude plugin, no host
-hooks, no slash-command bundle — just five skill directories and a small CLI
+hooks, no slash-command bundle — just six skill directories and a small CLI
 (ADR-0001).
 
 The store lives at `~/.oberon/<project-id>/`, **not** in your repo. That is
@@ -31,7 +31,7 @@ cd ~/dev/oberon
 ./install.sh
 ```
 
-Symlinks the five Oberon skills (plus `write-a-skill`) into `~/.agents/skills/`,
+Symlinks the six Oberon skills (plus `write-a-skill`) into `~/.agents/skills/`,
 `~/.claude/skills/` and `~/.codex/skills/`, and puts `oberon` on your PATH via
 `~/.local/bin`. Re-running is a no-op.
 
@@ -91,7 +91,28 @@ tree is marked as a snapshot of unsaved work rather than a verifiable reference.
 `oberon-sync` is model-invocable and **just runs** — the agent may fire it on
 its own when it notices state worth keeping.
 
-### 5. Context running low — `/oberon-handoff`
+### 5. Run the tests — `/oberon-test`
+
+```
+/oberon-test
+```
+
+Runs the suites that cover this project from the recipe in `TEST.md`, then
+records the run there: how to run each suite, prerequisites, landmines, the last
+results, and a ten-line run history. When `TEST.md` does not exist yet it is
+derived from repo evidence (CI config, task runners, language defaults) and
+created lazily — `oberon init` never seeds it (ADR-0016). So a cold session
+re-runs the right tests without rediscovering which suite matters, which service
+must be up, or which failure was already red.
+
+Failures are classified `regression` / `pre-existing` / `flaky`, and an
+unverified `pre-existing` claim says so. The skill never edits a test, adds a
+skip, or narrows a selector to reach green. It commits `TEST.md`, then calls
+`/oberon-sync` for the journal entry — a green re-run of an unchanged sha lets
+sync no-op, which is correct. **User-only** — `disable-model-invocation` is set,
+because running tests has side effects.
+
+### 6. Context running low — `/oberon-handoff`
 
 ```
 /oberon-handoff
@@ -101,7 +122,7 @@ Rewrites `HANDOFF.md` so a fresh session can pick up cold: where you are, what
 matters, what not to redo. Overwrites the previous handoff; the rest of the
 store is untouched.
 
-### 6. Feature shipped — `/oberon-delete`
+### 7. Feature shipped — `/oberon-delete`
 
 ```
 /oberon-delete
@@ -118,6 +139,7 @@ explicit confirmation.
 | `oberon-grill` | yes | asks first (and mints the store at the first decision) |
 | `oberon-status` | yes | runs directly (read-only) |
 | `oberon-sync` | yes | runs directly |
+| `oberon-test` | **no** | user-only (test runs have side effects) |
 | `oberon-handoff` | yes | (session continuity) |
 | `oberon-delete` | **no** | user-only |
 
@@ -128,6 +150,7 @@ explicit confirmation.
 | `oberon-grill` | Design interview; mints the store at the first settled decision, resumes an existing one |
 | `oberon-status` | Read-only TLDR of project state (safe any time) |
 | `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence |
+| `oberon-test` | Run the suites from `TEST.md`, record results, then call `oberon-sync` |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |
 
@@ -158,11 +181,13 @@ project is one subdirectory named by its `project_id`:
 ├── project.json   # manifest
 ├── DECISIONS.md   # numbered decisions D1…Dn + load-bearing facts (append-only)
 ├── PROGRESS.md    # bounded "Current state" header + dated entries
-└── HANDOFF.md     # single file, overwritten each handoff
+├── HANDOFF.md     # single file, overwritten each handoff
+└── TEST.md        # how to test + last results; created lazily by oberon-test
 ```
 
-Extra ad-hoc `NN-topic.md` notes are allowed but never created automatically.
-There is no per-store README.
+`oberon init` seeds the first four; `TEST.md` appears the first time
+`/oberon-test` runs (ADR-0016). Extra ad-hoc `NN-topic.md` notes are allowed but
+never created automatically. There is no per-store README.
 
 ### `project.json` schema (`schema: 1`)
 
@@ -221,7 +246,7 @@ Requires `git` and `jq`.
 
 What it does:
 
-1. Symlinks each of `skills/oberon-{grill,status,sync,handoff,delete}` and
+1. Symlinks each of `skills/oberon-{grill,status,sync,test,handoff,delete}` and
    `skills/write-a-skill` into **all three**:
    - `${AGENTS_HOME:-$HOME/.agents}/skills/` (omp / cross-harness native root)
    - `${CLAUDE_HOME:-$HOME/.claude}/skills/`
@@ -270,7 +295,7 @@ under `tests/bats/`, so the suite works on a fresh clone with no extra install:
 
 Glossary and settled terms: [`CONTEXT.md`](./CONTEXT.md).
 
-Architecture decisions: [`docs/adr/`](./docs/adr/) (ADR-0001 through ADR-0013).
+Architecture decisions: [`docs/adr/`](./docs/adr/) (ADR-0001 through ADR-0016).
 
 ## Known gaps / ideas
 
@@ -282,3 +307,6 @@ v1 carry-over ideas — not commitments for v2:
 - Use fewer tokens / make runs faster
 - Prompt to clear context between phases
 - Skip phase-level verification when a phase has only one sub-phase
+- `oberon status` does not report whether `TEST.md` exists or what its last
+  verdict was — the CLI parses `DECISIONS.md`, `PROGRESS.md` and `HANDOFF.md`
+  only (ADR-0016)

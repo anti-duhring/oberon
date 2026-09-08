@@ -21,6 +21,7 @@ SKILLS=(
   oberon-grill
   oberon-sync
   oberon-status
+  oberon-test
   oberon-handoff
   oberon-delete
   write-a-skill
@@ -87,7 +88,7 @@ case ":${PATH}:" in
 esac
 
 if [ "$status" -eq 0 ]; then
-  log "done. Skills: oberon-grill, oberon-sync, oberon-status, oberon-handoff, oberon-delete (+ write-a-skill). CLI: oberon"
+  log "done. Skills: oberon-grill, oberon-sync, oberon-status, oberon-test, oberon-handoff, oberon-delete (+ write-a-skill). CLI: oberon"
 else
   err "completed with errors"
 fi
