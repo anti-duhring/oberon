@@ -224,6 +224,17 @@ When the tree is resolved:
 
 1. Skim `DECISIONS.md` for holes or contradictions; fix only by appending new D/K numbers.
 2. Final `oberon commit <id> -m "grill: session complete"` if anything is still uncommitted.
-3. Brief close: count of new decisions/facts, store path, any deferred open questions. No Q&A transcript dump. When this session minted the store, say so and give the `project_id` — the user has not seen it before.
-4. Optionally offer `oberon-sync` or `oberon-handoff` — do not auto-run them.
-5. If nothing settled, there is no store: say that plainly instead of inventing one.
+3. Brief close: count of new decisions/facts and any deferred open questions. No Q&A transcript dump.
+4. Close with the status card (below) — it carries the `project_id` and store path, which the user has never seen when this session minted the store.
+5. Optionally offer `oberon-sync` or `oberon-handoff` — do not auto-run them.
+6. If nothing settled, there is no store: say that plainly instead of inventing one, and skip the card — there is nothing to render.
+
+## Close with the status card
+
+```bash
+oberon card <id>
+```
+
+Paste stdout **verbatim** in a fenced block; ≤1 line before, ≤1 line after. Never hand-format a substitute, never paste `oberon status` JSON. Full rules: `oberon-status`.
+
+Grill-specific: the card's `decisions` row is the interview's receipt and must show the numbers you just wrote. If it still reads `0 — nothing settled yet`, they did not land in `DECISIONS.md` — fix that before closing. The `id` row is how the user learns the `project_id` when this session minted the store.

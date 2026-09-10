@@ -150,7 +150,13 @@ After the commit, invoke `oberon-sync` for the same project id. It writes the da
 
 ## Report
 
-Close with: suites run, verdict per suite, failures with classification, store path, whether `oberon-sync` appended an entry or no-op'd. No raw test output dumps.
+Report: suites run, verdict per suite, failures with classification, and whether `oberon-sync` appended an entry or no-op'd. No raw test output dumps.
+
+## The status card comes from `oberon-sync`
+
+`oberon-sync` always closes with `oberon card <id>` — on its no-op path too — and it runs last here. So **do not render a second card**: one invocation, one card. Put your report above sync's card and leave the card itself untouched.
+
+The card carries no test verdict (ADR-0016): that lives in your report and in `TEST.md`.
 
 ## Failures
 

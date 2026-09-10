@@ -70,9 +70,33 @@ Coming back to a feature, or before you write anything down:
 ```
 
 Read-only TLDR of every project whose manifest claims the current repo (or one
-id you pass). Current state, decision count, last progress heading, per-repo
-branch/sha/dirty, and whether a handoff exists. Safe to invoke any time — it
-never mutates the store and needs no confirmation. Model-invocable; **just runs**.
+id you pass). Safe to invoke any time — it never mutates the store and needs no
+confirmation. Model-invocable; **just runs**.
+
+It prints the **status card**, the same block every other Oberon skill closes
+with (ADR-0017), rendered by `oberon card`:
+
+```
+── oberon ──────────────────────────────────────────────────────
+  project   ALT-120 reminder workflow
+  id        alt-120-reminder-workflow-9f3c
+  status    active · updated 3h ago
+  state     List route landed behind the ai-internal gate; the …
+  decisions 22 · last D20 D21 D22
+  progress  2026-09-02 18:40Z — list route + 403 gate
+  repos     spa-alt-120  feature/alt-120-reminders@12cf14c  DIRTY
+            sar-alt-120  main@3ece9ba  clean
+  handoff   updated 2d ago · STALE (progress is newer)
+  store     ~/.oberon/alt-120-reminder-workflow-9f3c
+  ! dirty tree — described work may not be in any commit
+────────────────────────────────────────────────────────────────
+```
+
+The project id is on the card because it is the argument every other command
+takes. `DIRTY` means the last sync entry may describe work that is in no commit
+(ADR-0013); `STALE` means `PROGRESS.md` was committed after `HANDOFF.md`, so a
+cold agent would resume from an out-of-date brief. Both timestamps come from the
+store repo's history, not file mtimes, so they survive a fresh clone.
 
 ### 4. Work, then record — `/oberon-sync`
 
@@ -154,6 +178,11 @@ explicit confirmation.
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |
 
+Every one of them closes with the same status card (`oberon card <id>`, ADR-0017),
+so an invocation always leaves the project id, current state, repo cleanliness and
+store path on screen. `oberon-delete` shows it in its confirmation instead — after
+the delete there is no project left to render.
+
 ### Invocation names by host
 
 | Host | Example (grill) |
@@ -227,6 +256,7 @@ use.
 | `oberon list [--status active\|closed\|all]` | one project per line | TSV `id<TAB>status<TAB>name` | — |
 | `oberon resolve [--repo PATH]` | ids whose manifest claims that repo (remote URL first, absolute path second) | one id per line | exit 4 if none |
 | `oberon status [ID]` | read-only TLDR payload for one id, or every project claiming the current repo | JSON array of project summaries | exit 4 if none claim the repo; exit 5 if `ID` unknown |
+| `oberon card [ID]` | the same payload rendered as the fixed status card every skill closes with | formatted text, one card per project | exit 4 if none claim the repo; exit 5 if `ID` unknown |
 | `oberon path ID` | absolute store directory | path | exit 5 if unknown |
 | `oberon repo-info PATH` | inspect a contributing repo | JSON `{path,remote,branch,sha,dirty,stat}` | exit 5 if not a repo |
 | `oberon attach ID --repo PATH` | add a contributing repo (idempotent), commit | — | exit 5 if unknown id |
@@ -307,6 +337,6 @@ v1 carry-over ideas — not commitments for v2:
 - Use fewer tokens / make runs faster
 - Prompt to clear context between phases
 - Skip phase-level verification when a phase has only one sub-phase
-- `oberon status` does not report whether `TEST.md` exists or what its last
-  verdict was — the CLI parses `DECISIONS.md`, `PROGRESS.md` and `HANDOFF.md`
-  only (ADR-0016)
+- `oberon status` / `oberon card` do not report whether `TEST.md` exists or what
+  its last verdict was — the CLI parses `DECISIONS.md`, `PROGRESS.md` and
+  `HANDOFF.md` only (ADR-0016)

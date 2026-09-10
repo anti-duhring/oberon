@@ -105,7 +105,17 @@ Dense, scannable, second-agent-facing. No transcript. No celebration. Path:line 
 oberon commit <id> -m "handoff: <short focus>"
 ```
 
-Tell the user the store path and that older handoffs remain in `git log` of the store repo (they recover via ordinary history — you do not run raw git for them unless they ask outside this skill).
+Say in one line that older handoffs remain in `git log` of the store repo (they recover via ordinary history — you do not run raw git for them unless they ask outside this skill). The store path comes from the card, not from prose.
+
+## Close with the status card
+
+```bash
+oberon card <id>
+```
+
+Paste stdout **verbatim** in a fenced block; ≤1 line before, ≤1 line after. Never hand-format a substitute, never paste `oberon status` JSON. Full rules: `oberon-status`.
+
+Handoff-specific: the card's `handoff` row is this run's receipt and must not read `STALE`. It does when `PROGRESS.md` has a **newer commit** than `HANDOFF.md` — so either you wrote the handoff before the last sync landed, or the write did not land at all. Re-check before handing over.
 
 ## Model invocation
 

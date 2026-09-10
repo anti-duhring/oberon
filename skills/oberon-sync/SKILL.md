@@ -41,7 +41,7 @@ Store dir: `oberon path <id>`. Read `project.json` only via that path (or `cat` 
    - same branch + sha per repo, `dirty` still false, and no new meaningful intent to record; or
    - dirty snapshot already recorded for the same dirty shape and conversation has no new chunk.
 
-   Tell the user you no-op'd and why, in one or two lines. Exit the skill cleanly.
+   Tell the user you no-op'd and why, in one or two lines, then close with the status card (below). Exit the skill cleanly.
 
 5. Proceed only when branch/sha/dirty/stat moved, or the conversation completed a real chunk that is not yet reflected.
 
@@ -111,7 +111,17 @@ Dirty example line:
    oberon commit <id> -m "sync: <short title from entry>"
    ```
 
-4. Report: id, whether dirty snapshots were flagged, one-line current state.
+4. Close with the status card (below).
+
+## Close with the status card
+
+```bash
+oberon card <id>
+```
+
+Paste stdout **verbatim** in a fenced block; ≤1 line before, ≤1 line after. Never hand-format a substitute, never paste `oberon status` JSON. Full rules: `oberon-status`.
+
+Sync-specific: the line before says what this entry recorded and whether any repo was a dirty snapshot. A **no-op** closes with the card too — "nothing observable changed" is exactly when the user wants the state in front of them.
 
 ## Failures
 

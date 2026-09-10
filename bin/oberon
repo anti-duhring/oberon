@@ -14,6 +14,7 @@ Commands:
                                List projects (TSV: id status name)
   resolve [--repo PATH]        Print project ids claiming a repo
   status [ID]                  Read-only project status TLDR (JSON array)
+  card [ID]                    Read-only status card (formatted text)
   path ID                      Print absolute store directory
   repo-info PATH               Inspect a contributing repo (JSON)
   attach ID --repo PATH        Add a contributing repo (idempotent)
@@ -164,21 +165,63 @@ resolve_claiming_ids() {
   fi
 }
 
-# ISO-8601 UTC mtime for a file; empty string if unavailable.
-file_mtime_utc() {
-  local f="$1"
-  [ -f "$f" ] || return 0
-  local epoch=""
-  if epoch="$(stat -f %m "$f" 2>/dev/null)"; then
-    :
-  elif epoch="$(stat -c %Y "$f" 2>/dev/null)"; then
-    :
-  else
-    return 0
-  fi
+# Epoch seconds → ISO-8601 UTC. Empty in, empty out.
+epoch_to_iso_utc() {
+  local epoch="$1"
+  [ -n "$epoch" ] || return 0
   date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || true
+}
+
+# Filesystem mtime in epoch seconds; empty when unavailable.
+#
+# GNU syntax is probed first on purpose: `stat -f` on GNU coreutils inspects the
+# *filesystem*, so a BSD-first probe exits 0 on Linux having printed a mount
+# point, and the fallback never runs. BSD `stat` has no `-c`, so it fails
+# cleanly. Both results are digit-checked before use.
+file_mtime_epoch() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  local out
+  out="$(stat -c %Y "$f" 2>/dev/null || true)"
+  case "$out" in
+    ''|*[!0-9]*) out="$(stat -f %m "$f" 2>/dev/null || true)" ;;
+  esac
+  case "$out" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s\n' "$out"
+}
+
+# ISO-8601 UTC *content* time for a store file: the commit that last changed it,
+# falling back to mtime while the file is uncommitted. Checkout mtimes are all
+# equal to clone time, so mtime alone would erase the ordering that makes a
+# handoff stale the moment the store is cloned onto another machine (ADR-0004,
+# ADR-0008, ADR-0017).
+store_file_time_utc() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+
+  local home rel epoch=""
+  home="$(oberon_home)"
+  case "$f" in
+    "$home"/*) rel="${f#"$home"/}" ;;
+    *) rel="" ;;
+  esac
+
+  if [ -n "$rel" ] && git -C "$home" rev-parse --git-dir >/dev/null 2>&1; then
+    # A pending edit (or an untracked file) is newer than any commit, so the
+    # working-tree mtime is the honest answer there.
+    local pending
+    pending="$(git -C "$home" status --porcelain -- "$rel" 2>/dev/null || true)"
+    if [ -z "$pending" ]; then
+      epoch="$(git -C "$home" log -1 --format=%ct -- "$rel" 2>/dev/null || true)"
+    fi
+  fi
+
+  [ -n "$epoch" ] || epoch="$(file_mtime_epoch "$f")"
+  epoch_to_iso_utc "$epoch"
 }
 
 # decisions summary JSON: {count, last_ids} from D<n> entries in DECISIONS.md.
@@ -230,13 +273,15 @@ decisions_summary_json() {
     '{count:$count, last_ids:$last_ids}'
 }
 
-# progress summary JSON from PROGRESS.md.
+# progress summary JSON from PROGRESS.md. `updated_at` is the file mtime — the
+# newest progress signal, which is what makes a handoff stale (ADR-0017).
 progress_summary_json() {
   local file="$1"
   local entry_count=0
   local current_state=""
   local has_current=0
   local last_heading=""
+  local updated_at=""
 
   if [ -f "$file" ]; then
     if grep -qE '^## Current state[[:space:]]*$' "$file"; then
@@ -266,19 +311,23 @@ progress_summary_json() {
     done < <(grep -E '^#{2,3}[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' "$file" 2>/dev/null || true)
   fi
 
+  updated_at="$(store_file_time_utc "$file")"
+
   if [ "$has_current" -eq 0 ]; then
-    jq -n -c --argjson entry_count "$entry_count" --arg last "$last_heading" '
+    jq -n -c --argjson entry_count "$entry_count" --arg last "$last_heading" --arg ts "$updated_at" '
       {
         entry_count: $entry_count,
         current_state: null,
-        last_entry_heading: (if $last == "" then null else $last end)
+        last_entry_heading: (if $last == "" then null else $last end),
+        updated_at: (if $ts == "" then null else $ts end)
       }'
   else
-    jq -n -c --argjson entry_count "$entry_count" --arg state "$current_state" --arg last "$last_heading" '
+    jq -n -c --argjson entry_count "$entry_count" --arg state "$current_state" --arg last "$last_heading" --arg ts "$updated_at" '
       {
         entry_count: $entry_count,
         current_state: $state,
-        last_entry_heading: (if $last == "" then null else $last end)
+        last_entry_heading: (if $last == "" then null else $last end),
+        updated_at: (if $ts == "" then null else $ts end)
       }'
   fi
 }
@@ -291,7 +340,7 @@ handoff_summary_json() {
     return
   fi
   local ts
-  ts="$(file_mtime_utc "$file")"
+  ts="$(store_file_time_utc "$file")"
   jq -n -c --arg ts "$ts" '
     {present:true, updated_at:(if $ts == "" then null else $ts end)}
   '
@@ -385,6 +434,211 @@ status_project_json() {
         handoff: $handoff,
         contributing_repos: $contributing_repos
       }'
+}
+
+# ---------------------------------------------------------------------------
+# Card rendering (ADR-0017): one fixed, CLI-owned layout every skill closes
+# with, so a sync, a handoff, a grill and a status report all look the same.
+# ---------------------------------------------------------------------------
+
+CARD_WIDTH=64
+
+# Does *this* shell, right now, treat a 3-byte character as one character? That
+# is the only property the card needs, and it is cheaper and more truthful to
+# measure it than to pattern-match locale names (a locale can be present in
+# `locale -a` and still not drive bash's multibyte handling).
+card_locale_is_utf8() {
+  local probe='─'
+  [ "${#probe}" -eq 1 ]
+}
+
+# The card draws box rules and clips at character boundaries, both of which are
+# byte-wise nonsense under a C locale. Switch to a UTF-8 locale when the
+# environment has not picked a working one; bash re-runs setlocale on
+# assignment, so the probe above sees the change immediately.
+card_force_utf8_locale() {
+  card_locale_is_utf8 && return 0
+
+  local had_lc_all="${LC_ALL+set}"
+  local saved="${LC_ALL:-}"
+  # Capture the list rather than piping into grep -q: under `pipefail` the
+  # early-exiting grep SIGPIPEs `locale`, and the match would be thrown away.
+  local avail
+  avail="$(locale -a 2>/dev/null || true)"
+  local cand
+  for cand in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+    case $'\n'"$avail"$'\n' in
+      *$'\n'"$cand"$'\n'*) ;;
+      *) continue ;;
+    esac
+    export LC_ALL="$cand"
+    card_locale_is_utf8 && return 0
+  done
+
+  # Nothing usable: leave the environment exactly as we found it and render
+  # byte-wise rather than under a locale we just proved does not work.
+  if [ -n "$had_lc_all" ]; then
+    export LC_ALL="$saved"
+  else
+    unset LC_ALL
+  fi
+}
+
+# Epoch seconds from an ISO-8601 UTC timestamp. Empty when unparseable.
+epoch_from_iso() {
+  local iso="$1"
+  case "$iso" in
+    ""|null) return 0 ;;
+  esac
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return 0
+  date -u -d "$iso" +%s 2>/dev/null || true
+}
+
+# "3h ago" / "2d ago" / "just now" from an ISO-8601 timestamp.
+age_human() {
+  local epoch
+  epoch="$(epoch_from_iso "$1")"
+  [ -n "$epoch" ] || { printf 'unknown'; return 0; }
+  local delta=$(( $(date -u +%s) - epoch ))
+  [ "$delta" -lt 0 ] && delta=0
+  if [ "$delta" -lt 60 ]; then
+    printf 'just now'
+  elif [ "$delta" -lt 3600 ]; then
+    printf '%dm ago' $(( delta / 60 ))
+  elif [ "$delta" -lt 172800 ]; then
+    printf '%dh ago' $(( delta / 3600 ))
+  else
+    printf '%dd ago' $(( delta / 86400 ))
+  fi
+}
+
+# First line of a value, hard-clipped to N characters. HTML comments and blank
+# lines are dropped first (the seeded store files carry both), so a one-line
+# value never picks up a spurious "…" continuation marker.
+card_clip() {
+  local text="$1" max="$2"
+  local body first rest
+  body="$(printf '%s\n' "$text" \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^#+[[:space:]]*//' \
+    | grep -vE '^(<!--|$)' || true)"
+  first="${body%%$'\n'*}"
+  rest="$(printf '%s' "${body#"$first"}" | tr -d '\n')"
+  if [ "${#first}" -gt "$max" ]; then
+    printf '%s…' "${first:0:$((max - 1))}"
+  elif [ -n "$rest" ]; then
+    printf '%s …' "$first"
+  else
+    printf '%s' "$first"
+  fi
+}
+
+card_rule() {
+  local label="${1:-}"
+  local fill="$CARD_WIDTH"
+  if [ -n "$label" ]; then
+    printf '── %s ' "$label"
+    fill=$(( CARD_WIDTH - ${#label} - 4 ))
+  fi
+  [ "$fill" -lt 0 ] && fill=0
+  local pad
+  printf -v pad '%*s' "$fill" ''
+  printf '%s\n' "${pad// /─}"
+}
+
+card_row() {
+  printf '  %-9s %s\n' "$1" "$2"
+}
+
+# Render one status object (stdin-free, JSON in $1) as a card.
+render_card() {
+  local json="$1"
+  card_force_utf8_locale
+
+  local id name pstatus updated state dcount dlast phead hpresent hts pts store
+  id="$(jq -r '.project_id' <<<"$json")"
+  name="$(jq -r '.project_name' <<<"$json")"
+  pstatus="$(jq -r '.project_status' <<<"$json")"
+  updated="$(jq -r '.updated_at // ""' <<<"$json")"
+  store="$(jq -r '.store_path' <<<"$json")"
+  case "$store" in
+    "$HOME"/*) store="~${store#"$HOME"}" ;;
+  esac
+  state="$(jq -r '.progress.current_state // ""' <<<"$json")"
+  dcount="$(jq -r '.decisions.count' <<<"$json")"
+  dlast="$(jq -r '.decisions.last_ids | join(" ")' <<<"$json")"
+  phead="$(jq -r '.progress.last_entry_heading // ""' <<<"$json")"
+  pts="$(jq -r '.progress.updated_at // ""' <<<"$json")"
+  hpresent="$(jq -r '.handoff.present' <<<"$json")"
+  hts="$(jq -r '.handoff.updated_at // ""' <<<"$json")"
+
+  card_rule "oberon"
+  card_row "project" "$(card_clip "$name" 52)"
+  card_row "id" "$id"
+  card_row "status" "$pstatus · updated $(age_human "$updated")"
+
+  local state_row='(none yet)'
+  [ -n "$state" ] && state_row="$(card_clip "$state" 52)"
+  card_row "state" "$state_row"
+
+  local dec_row="$dcount"
+  if [ "$dcount" -eq 0 ]; then
+    dec_row='0 — nothing settled yet'
+  elif [ -n "$dlast" ]; then
+    dec_row="$dcount · last $dlast"
+  fi
+  card_row "decisions" "$dec_row"
+
+  local prog_row='(no journal entries)'
+  [ -n "$phead" ] && prog_row="$(card_clip "$phead" 52)"
+  card_row "progress" "$prog_row"
+
+  # Repos: one line each, first line carries the label.
+  local n=0 i=0 label='repos' dirty_seen=0 missing_seen=0
+  n="$(jq -r '.contributing_repos | length' <<<"$json")"
+  if [ "$n" -eq 0 ]; then
+    card_row "repos" "(none attached)"
+  fi
+  while [ "$i" -lt "$n" ]; do
+    local rname rexists rbranch rsha rdirty row
+    rname="$(jq -r --argjson i "$i" '.contributing_repos[$i].name' <<<"$json")"
+    rexists="$(jq -r --argjson i "$i" '.contributing_repos[$i].exists' <<<"$json")"
+    rbranch="$(jq -r --argjson i "$i" '.contributing_repos[$i].branch // ""' <<<"$json")"
+    rsha="$(jq -r --argjson i "$i" '.contributing_repos[$i].sha // ""' <<<"$json")"
+    rdirty="$(jq -r --argjson i "$i" '.contributing_repos[$i].dirty' <<<"$json")"
+    if [ "$rexists" != "true" ]; then
+      row="$rname  MISSING"
+      missing_seen=1
+    elif [ "$rdirty" = "true" ]; then
+      row="$rname  ${rbranch}@${rsha}  DIRTY"
+      dirty_seen=1
+    else
+      row="$rname  ${rbranch}@${rsha}  clean"
+    fi
+    card_row "$label" "$row"
+    label=''
+    i=$((i + 1))
+  done
+
+  local hand_row='none'
+  if [ "$hpresent" = "true" ]; then
+    hand_row="updated $(age_human "$hts")"
+    local he pe
+    he="$(epoch_from_iso "$hts")"
+    pe="$(epoch_from_iso "$pts")"
+    if [ -n "$he" ] && [ -n "$pe" ] && [ "$he" -lt "$pe" ]; then
+      hand_row="$hand_row · STALE (progress is newer)"
+    fi
+  fi
+  card_row "handoff" "$hand_row"
+  card_row "store" "$store"
+
+  if [ "$dirty_seen" -eq 1 ]; then
+    printf '  ! dirty tree — described work may not be in any commit\n'
+  fi
+  if [ "$missing_seen" -eq 1 ]; then
+    printf '  ! a contributing repo path no longer exists\n'
+  fi
+  card_rule
 }
 
 bump_updated_at() {
@@ -618,42 +872,70 @@ cmd_resolve() {
   resolve_claiming_ids "$repo_path"
 }
 
-cmd_status() {
-  local id=""
+# Shared id resolution for the two read-only reporters (status, card): explicit
+# id, else every project claiming the current repo. Prints one id per line;
+# propagates exit 4 (nothing claims the repo) and 5 (unknown id).
+resolve_report_ids() {
+  local cmd="$1" id="$2"
+  if [ -n "$id" ]; then
+    require_project "$id"
+    printf '%s\n' "$id"
+    return 0
+  fi
+  # Capture so exit 4/5 from resolve_claiming_ids propagates (process
+  # substitution would swallow the status under set -e).
+  local resolved
+  resolved="$(resolve_claiming_ids ".")" || exit $?
+  printf '%s\n' "$resolved"
+}
+
+# Single optional positional ID for status/card. Sets REPORT_ID rather than
+# printing it, so `-h` can still exit the process instead of a subshell.
+REPORT_ID=""
+parse_report_id() {
+  local cmd="$1"; shift
+  REPORT_ID=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -h|--help) usage; exit 0 ;;
       *)
-        if [ -z "$id" ]; then
-          id="$1"; shift
+        if [ -z "$REPORT_ID" ]; then
+          REPORT_ID="$1"; shift
         else
-          die "status: unknown argument: $1"
+          die "$cmd: unknown argument: $1"
         fi
         ;;
     esac
   done
+}
 
-  local -a ids=()
-  if [ -n "$id" ]; then
-    require_project "$id"
-    ids=("$id")
-  else
-    local resolved line
-    # Capture so exit 4/5 from resolve_claiming_ids propagates (process
-    # substitution would swallow the status under set -e).
-    resolved="$(resolve_claiming_ids ".")" || exit $?
-    while IFS= read -r line; do
-      [ -n "$line" ] && ids+=("$line")
-    done <<<"$resolved"
-  fi
+cmd_status() {
+  local ids_raw line
+  parse_report_id status "$@"
+  ids_raw="$(resolve_report_ids status "$REPORT_ID")"
 
   local out='[]'
-  local pid entry
-  for pid in "${ids[@]}"; do
-    entry="$(status_project_json "$pid")"
+  local entry
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    entry="$(status_project_json "$line")"
     out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")"
-  done
+  done <<<"$ids_raw"
   printf '%s\n' "$out"
+}
+
+cmd_card() {
+  local ids_raw line
+  parse_report_id card "$@"
+  ids_raw="$(resolve_report_ids card "$REPORT_ID")"
+
+  local first=1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$first" -eq 1 ] || printf '\n'
+    first=0
+    render_card "$(status_project_json "$line")"
+  done <<<"$ids_raw"
 }
 
 cmd_path() {
@@ -888,6 +1170,7 @@ main() {
     list)      cmd_list "$@" ;;
     resolve)   cmd_resolve "$@" ;;
     status)    cmd_status "$@" ;;
+    card)      cmd_card "$@" ;;
     path)      cmd_path "$@" ;;
     repo-info) cmd_repo_info "$@" ;;
     attach)    cmd_attach "$@" ;;

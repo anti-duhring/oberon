@@ -28,13 +28,13 @@ Verify with `oberon path <id>` (exit 5 → unknown id, stop).
 
 ## Confirmation (mandatory)
 
-Before calling delete, show **all** of the following and wait for an explicit yes that names the id:
+Before calling delete, render the status card for the id — `oberon card <id>`, printed **verbatim** in a fenced block (rules: `oberon-status`) — so the user sees exactly what they are about to lose (id, decisions, last entry, dirty repos). It is shown **before** the delete because afterwards there is no project to render.
 
-1. **Project id** and name (from `project.json`).
-2. **Absolute store path** from `oberon path <id>`.
-3. **Entry count** — number of files under that directory (e.g. `find "$(oberon path <id>)" -type f | wc -l`) plus a short listing of top-level names (`project.json`, `DECISIONS.md`, …).
-4. **Store repo root** — `oberon home`.
-5. **Recovery line** — exact command they can run later. Resolve a current store-repo sha with a read-only inspection if needed (the recovery recipe is documentation for the user; the delete itself still goes through the CLI):
+Then show **all** of the following and wait for an explicit yes that names the id:
+
+1. **Entry count** — number of files under that directory (e.g. `find "$(oberon path <id>)" -type f | wc -l`) plus a short listing of top-level names (`project.json`, `DECISIONS.md`, …).
+2. **Store repo root** — `oberon home`.
+3. **Recovery line** — exact command they can run later. Resolve a current store-repo sha with a read-only inspection if needed (the recovery recipe is documentation for the user; the delete itself still goes through the CLI):
 
    ```bash
    git -C "$(oberon home)" checkout <sha-before-delete> -- <id>/
@@ -63,4 +63,4 @@ oberon delete <id> --yes
 
 ## After
 
-Report: id removed, store repo home, the recovery checkout line again, and that `oberon list` no longer shows it. Closed vs deleted: status `closed` means finished work kept on disk; delete means out of the working tree entirely.
+Report: id removed, store repo home, the recovery checkout line again, and that `oberon list` no longer shows it. Do **not** run `oberon card` after the delete — the id is gone and the CLI exits 5. Closed vs deleted: status `closed` means finished work kept on disk (and still renders a card); delete means out of the working tree entirely.

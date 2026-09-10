@@ -441,3 +441,209 @@ EOF
   [ "$before_head" = "$after_head" ]
   [ "$before_ts" = "$after_ts" ]
 }
+
+@test "card renders the fixed rows for one project" {
+  local id
+  id="$(oberon init --name "Card Shape" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  cat >"$dir/DECISIONS.md" <<'EOF'
+# Decisions
+
+### D1 — store is central
+### D2 — card is rendered by the CLI
+EOF
+  cat >"$dir/PROGRESS.md" <<'EOF'
+# Progress
+
+## Current state
+
+List route landed; the 403 test is still red.
+
+## Journal
+
+### 2026-09-02 18:40Z — list route + 403 gate
+
+- evidence
+EOF
+
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"── oberon "* ]]
+  [[ "$output" == *"id        $id"* ]]
+  [[ "$output" == *"project   Card Shape"* ]]
+  [[ "$output" == *"status    active"* ]]
+  [[ "$output" == *"List route landed; the 403 test is still red."* ]]
+  [[ "$output" == *"decisions 2 · last D1 D2"* ]]
+  [[ "$output" == *"2026-09-02 18:40Z — list route + 403 gate"* ]]
+  [[ "$output" == *"fake-repo  "*"  clean"* ]]
+  [[ "$output" == *"store     $OBERON_HOME/$id"* ]]
+  # No raw JSON leaks into the card.
+  [[ "$output" != *'"project_id"'* ]]
+}
+
+@test "card flags dirty repos, missing repos, and no handoff" {
+  local id
+  id="$(oberon init --name "Card Dirty" --repo "$FAKE_REPO")"
+  echo "dirt" >>"$FAKE_REPO/README"
+  rm "$OBERON_HOME/$id/HANDOFF.md"
+
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DIRTY"* ]]
+  [[ "$output" == *"! dirty tree"* ]]
+  [[ "$output" == *"handoff   none"* ]]
+
+  # Missing contributing repo path.
+  rm -rf "$FAKE_REPO"
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fake-repo  MISSING"* ]]
+  [[ "$output" == *"! a contributing repo path no longer exists"* ]]
+}
+
+@test "card marks the handoff stale when PROGRESS.md changed later" {
+  local id
+  id="$(oberon init --name "Card Stale" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  # Handoff rewritten after the last progress edit: not stale.
+  printf 'progress body\n' >>"$dir/PROGRESS.md"
+  oberon commit "$id" -m "sync"
+  sleep 1
+  printf 'handoff body\n' >>"$dir/HANDOFF.md"
+  oberon commit "$id" -m "handoff"
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"STALE"* ]]
+
+  # Progress moves afterwards: stale.
+  sleep 1
+  printf 'more progress\n' >>"$dir/PROGRESS.md"
+  oberon commit "$id" -m "sync again"
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"STALE"* ]]
+
+  # A mere touch is not a content change and must not flip the verdict.
+  sleep 1
+  touch "$dir/HANDOFF.md"
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"STALE"* ]]
+}
+
+@test "card staleness survives a fresh clone of the store" {
+  local id
+  id="$(oberon init --name "Card Clone" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  printf 'handoff body\n' >>"$dir/HANDOFF.md"
+  oberon commit "$id" -m "handoff"
+  sleep 1
+  printf 'progress body\n' >>"$dir/PROGRESS.md"
+  oberon commit "$id" -m "sync"
+
+  # Cloning rewrites every mtime to checkout time; commit order is the only
+  # surviving evidence of which file moved last.
+  local clone="${BATS_TEST_TMPDIR}/store-clone"
+  git clone -q "$OBERON_HOME" "$clone"
+
+  OBERON_HOME="$clone" run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"STALE"* ]]
+}
+
+@test "card uses working-tree time for an uncommitted handoff" {
+  local id
+  id="$(oberon init --name "Card Uncommitted" --repo "$FAKE_REPO")"
+  local dir="$OBERON_HOME/$id"
+
+  printf 'progress body\n' >>"$dir/PROGRESS.md"
+  oberon commit "$id" -m "sync"
+  sleep 1
+  # Written but not yet committed: newer than any commit, so not stale.
+  printf 'handoff body\n' >>"$dir/HANDOFF.md"
+
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"STALE"* ]]
+}
+
+@test "card renders one block per project claiming the repo" {
+  local id1 id2
+  id1="$(oberon init --name "Card A" --repo "$FAKE_REPO")"
+  id2="$(oberon init --name "Card B" --repo "$FAKE_REPO")"
+
+  cd "$FAKE_REPO"
+  run oberon card
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$id1"* ]]
+  [[ "$output" == *"$id2"* ]]
+  [ "$(grep -c '── oberon ' <<<"$output")" -eq 2 ]
+}
+
+@test "card renders under a C locale without splitting multibyte characters" {
+  local id
+  id="$(oberon init --name "Card Locale" --repo "$FAKE_REPO")"
+  printf '## Current state\n\nRoute landed — gate red — fixture role wrong — em dashes past the clip boundary — more.\n' \
+    >"$OBERON_HOME/$id/PROGRESS.md"
+
+  LC_ALL=C run oberon card "$id"
+  [ "$status" -eq 0 ]
+  # A byte-clipped card emits invalid UTF-8; a character-clipped one does not.
+  printf '%s' "$output" | iconv -f UTF-8 -t UTF-8 >/dev/null
+  [[ "$output" == *"────"* ]]
+}
+
+@test "card shares status resolution: exit 4 with no claim, exit 5 for unknown id" {
+  local orphan="${BATS_TEST_TMPDIR}/card-orphan"
+  mkdir -p "$orphan"
+  git -C "$orphan" init -q
+  git -C "$orphan" remote add origin "git@github.com:example/card-orphan.git"
+  oberon init --name "Elsewhere" >/dev/null
+
+  cd "$orphan"
+  run oberon card
+  [ "$status" -eq 4 ]
+
+  run oberon card "no-such-project-zzzz"
+  [ "$status" -eq 5 ]
+}
+
+@test "card is side-effect free: store HEAD and updated_at unchanged" {
+  local id
+  id="$(oberon init --name "Card No Side Effects" --repo "$FAKE_REPO")"
+  local before_head after_head before_ts after_ts
+  before_head="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  before_ts="$(jq -r '.updated_at' "$OBERON_HOME/$id/project.json")"
+
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+
+  after_head="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  after_ts="$(jq -r '.updated_at' "$OBERON_HOME/$id/project.json")"
+  [ "$before_head" = "$after_head" ]
+  [ "$before_ts" = "$after_ts" ]
+}
+
+@test "status payload carries well-formed store timestamps for staleness" {
+  local id
+  id="$(oberon init --name "Progress Timestamp" --repo "$FAKE_REPO")"
+
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+
+  # Committed by init, so these come from the store repo's history. A wrong
+  # `stat` probe (GNU `stat -f` prints a mount point) or an unparsed epoch shows
+  # up here as an empty or malformed timestamp rather than a silent skew.
+  local iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  [[ "$(jq -r '.[0].progress.updated_at' <<<"$output")" =~ $iso ]]
+  [[ "$(jq -r '.[0].handoff.updated_at' <<<"$output")" =~ $iso ]]
+
+  # Uncommitted file: the same shape must come out of the mtime path.
+  printf 'pending\n' >>"$OBERON_HOME/$id/PROGRESS.md"
+  run oberon status "$id"
+  [ "$status" -eq 0 ]
+  [[ "$(jq -r '.[0].progress.updated_at' <<<"$output")" =~ $iso ]]
+}
