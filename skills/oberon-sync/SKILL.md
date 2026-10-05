@@ -1,11 +1,11 @@
 ---
 name: oberon-sync
-description: Append one dated PROGRESS.md journal entry for an Oberon project from observable git evidence. Use after a meaningful chunk of implementation or when the working tree's story has moved on. Reads the last entry first and no-ops when nothing observable changed. Never rewrites prior entries.
+description: Append one dated PROGRESS.md journal entry for an Oberon project from observable git evidence, and refresh HANDOFF.md in the same store commit so a cold agent can resume. Use after a meaningful chunk of implementation or when the working tree's story has moved on. Reads the last entry first and no-ops when nothing observable changed. Never rewrites prior entries.
 ---
 
 # oberon-sync
 
-Append one dated entry to the store's `PROGRESS.md` and rewrite the short `## Current state` header. Intent comes from the conversation; **spine** comes from `oberon repo-info` per contributing repo. No confirmation gate — but the no-op check is mandatory. Never raw `git` for store commits; never hand-edit `project.json`.
+Append one dated entry to the store's `PROGRESS.md`, rewrite the short `## Current state` header, then overwrite `HANDOFF.md` from the same evidence — both land in **one** store commit. Intent comes from the conversation; **spine** comes from `oberon repo-info` per contributing repo. No confirmation gate — but the no-op check is mandatory. Never raw `git` for store commits; never hand-edit `project.json`.
 
 ## The `oberon` CLI
 
@@ -41,7 +41,7 @@ Store dir: `oberon path <id>`. Read `project.json` only via that path (or `cat` 
    - same branch + sha per repo, `dirty` still false, and no new meaningful intent to record; or
    - dirty snapshot already recorded for the same dirty shape and conversation has no new chunk.
 
-   Tell the user you no-op'd and why, in one or two lines, then close with the status card (below). Exit the skill cleanly.
+   Then apply the **handoff check** (below) — a no-op journal does not always mean a fresh handoff. If the handoff check also passes, write nothing: tell the user you no-op'd and why, in one or two lines, then close with the status card (below). Exit the skill cleanly.
 
 5. Proceed only when branch/sha/dirty/stat moved, or the conversation completed a real chunk that is not yet reflected.
 
@@ -105,13 +105,37 @@ Dirty example line:
 
 1. Update `## Current state`.
 2. Append exactly one new journal entry.
-3. Commit the store:
+3. Overwrite `HANDOFF.md` (see **Refresh the handoff**). Write it *after* the journal so it can cite the new entry by date/title.
+4. Commit both files in one store commit (`oberon commit` stages the whole project directory):
 
    ```bash
    oberon commit <id> -m "sync: <short title from entry>"
    ```
 
-4. Close with the status card (below).
+   One commit keeps `PROGRESS.md` and `HANDOFF.md` at the same commit time, so the card's handoff row never reads `STALE` after a sync. Do not split it into a sync commit followed by a handoff commit.
+
+5. Close with the status card (below).
+
+## Refresh the handoff
+
+Every sync that writes a journal entry also overwrites `HANDOFF.md`. The rules live in `oberon-handoff` — read that skill and follow these sections **as written**, instead of restating them here:
+
+- **Read before writing** — you already hold `PROGRESS.md` and the repo-info JSON from the no-op check; reuse them, don't re-run `repo-info`.
+- **Write `HANDOFF.md`** — full overwrite, all required substance, pointers not copies.
+- **Redaction** and **Tone**.
+
+Skip its **Commit** and **Close with the status card** sections: this skill commits once and renders the one card.
+
+Handoff focus: if the user passed a focus argument to sync, use it for **Resume at**; otherwise derive it from the new `## Current state`.
+
+### Handoff check (no-op path only)
+
+When the journal no-op fires, still overwrite `HANDOFF.md` if any of these hold:
+
+- `HANDOFF.md` is missing, or `oberon card <id>` shows its row as `STALE`;
+- the session has in-flight work, blockers, or landmines not captured in the current `HANDOFF.md` (uncommitted findings, half-done patches, commands to re-run).
+
+In that case write only `HANDOFF.md` and commit with `oberon commit <id> -m "handoff: <short focus>"`. Otherwise write nothing.
 
 ## Close with the status card
 
@@ -121,7 +145,7 @@ oberon card <id>
 
 Paste stdout **verbatim** in a fenced block; ≤1 line before, ≤1 line after. Never hand-format a substitute, never paste `oberon status` JSON. Full rules: `oberon-status`.
 
-Sync-specific: the line before says what this entry recorded and whether any repo was a dirty snapshot. A **no-op** closes with the card too — "nothing observable changed" is exactly when the user wants the state in front of them.
+Sync-specific: the line before says what this entry recorded, whether any repo was a dirty snapshot, and that the handoff was refreshed in the same commit (older handoffs stay in the store repo's history). A **no-op** closes with the card too — "nothing observable changed" is exactly when the user wants the state in front of them; say whether the handoff was refreshed or also left as-is.
 
 ## Failures
 

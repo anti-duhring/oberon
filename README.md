@@ -112,6 +112,8 @@ header. It never touches `DECISIONS.md` — that is grill's file — and never e
 an earlier entry. Each entry is spined on real git evidence per contributing repo
 (branch, sha, dirty flag, `--stat` summary), and an entry taken against a dirty
 tree is marked as a snapshot of unsaved work rather than a verifiable reference.
+The same run overwrites `HANDOFF.md` (following `oberon-handoff`'s rules) and
+commits both files together, so the handoff is never older than the journal.
 `oberon-sync` is model-invocable and **just runs** — the agent may fire it on
 its own when it notices state worth keeping.
 
@@ -144,7 +146,8 @@ because running tests has side effects.
 
 Rewrites `HANDOFF.md` so a fresh session can pick up cold: where you are, what
 matters, what not to redo. Overwrites the previous handoff; the rest of the
-store is untouched.
+store is untouched. `oberon-sync` already refreshes the handoff on every sync —
+run this on its own when you need one mid-chunk, without a new journal entry.
 
 ### 7. Feature shipped — `/oberon-delete`
 
@@ -173,7 +176,7 @@ explicit confirmation.
 |---|---|
 | `oberon-grill` | Design interview; mints the store at the first settled decision, resumes an existing one |
 | `oberon-status` | Read-only TLDR of project state (safe any time) |
-| `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence |
+| `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence and refresh `HANDOFF.md` in the same commit |
 | `oberon-test` | Run the suites from `TEST.md`, record results, then call `oberon-sync` |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |

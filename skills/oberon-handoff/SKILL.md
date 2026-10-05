@@ -7,6 +7,8 @@ description: Overwrite the Oberon store's HANDOFF.md so a fresh agent can contin
 
 Compact the live session into the store's single `HANDOFF.md` (overwrite in place; prior versions live in store-repo history). Goal: a cold agent can resume without this conversation. All store commits go through `oberon`; never raw `git` on the store; never hand-edit `project.json`.
 
+`oberon-sync` runs this skill's **Read before writing**, **Write `HANDOFF.md`** and **Redaction** sections on every sync, and lands the handoff in the same commit as the journal entry. Invoke this skill on its own when you need a handoff without a new journal entry — context is tight mid-chunk, or the user asks for one.
+
 ## The `oberon` CLI
 
 Call `oberon` from `PATH`. Every store mutation goes through it. If the command is missing,
