@@ -52,22 +52,33 @@ Build a mental map of decided vs open. Only grill gaps, contradictions, and unde
 ## Grilling rules (strict)
 
 1. **One question per turn.** Never bundle.
-2. **≤ 2 sentences** per question. Broader → split.
-3. **2–4 labeled options** as `(a)`, `(b)`, `(c)`, `(d)` when options apply. Pure fact questions (names, URLs) may be open.
-4. **Always recommend**, one line: `**Recommend (b)** — <why>.`
-5. **No preamble.** No "Great!", no restating the user, no meta "next we'll…".
-6. **No stacked sub-questions.**
-7. **Explore code instead of asking** when files answer it.
-8. **Stop when the tree is resolved.** No padding.
+2. **Context before the question.** Open every question with a short **Context** block: define
+   each concept, term or artefact the question depends on (what it is, where it comes from, why
+   it matters here) and the fact that makes this a decision now. Assume the user has not read the
+   seed docs or the code. 2–5 bullets, each one line; cite `path:line` when it carries the fact.
+3. **≤ 2 sentences** for the question line itself. Broader → split.
+4. **2–4 labeled options** as `(a)`, `(b)`, `(c)`, `(d)` when options apply, each in plain words
+   with its consequence. Pure fact questions (names, URLs) may be open.
+5. **Always recommend**, one line: `**Recommend (b)** — <why>.`
+6. **No preamble.** No "Great!", no restating the user, no meta "next we'll…". The Context block
+   is not preamble: it explains the question, never the conversation.
+7. **No stacked sub-questions.**
+8. **Explore code instead of asking** when files answer it.
+9. **Stop when the tree is resolved.** No padding.
 
 ### Question shape
 
 ```
+**Context**
+- **<Concept>** — what it is, in one line.
+- **<Concept>** — what it is; where it lives (`path:line`).
+- Why it is a decision now: <the fact or conflict that forces a choice>.
+
 **Q<N>: <short question>?**
 
-- **(a)** <option>
-- **(b)** <option>
-- **(c)** <option>
+- **(a)** <option> — <consequence>
+- **(b)** <option> — <consequence>
+- **(c)** <option> — <consequence>
 
 **Recommend (a)** — <one-line rationale>.
 ```
