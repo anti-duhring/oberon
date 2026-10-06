@@ -16,8 +16,12 @@ Commands:
   status [ID]                  Read-only project status TLDR (JSON array)
   card [ID]                    Read-only status card (formatted text)
   path ID                      Print absolute store directory
-  repo-info PATH               Inspect a contributing repo (JSON)
-  attach ID --repo PATH        Add a contributing repo (idempotent)
+  repo-info PATH [--contract SLUG]
+                               Inspect a contributing repo (JSON), with its
+                               change contract when a slug or feat/<slug> names one
+  attach ID --repo PATH [--contract SLUG]
+                               Add a contributing repo (idempotent); --contract
+                               records its .specs/features/<slug>/ folder
   set ID --status active|closed
                                Update project status
   commit ID -m MSG             Stage project dir and commit
@@ -346,14 +350,163 @@ handoff_summary_json() {
   '
 }
 
-# One contributing_repos element JSON for status.
+# ---------------------------------------------------------------------------
+# Change contract (ADR-0019). The harness feature skills own
+# `.specs/features/<slug>/` in each repo; Oberon only reads it, so sync, status
+# and the card can report where each repo stands without keeping a copy.
+# ---------------------------------------------------------------------------
+
+# The spec validator ships inside the harness `spec-driven` skill. Prefer an
+# explicit override, then the skill roots install.sh also writes to.
+spec_validator_path() {
+  if [ -n "${OBERON_SPEC_VALIDATOR:-}" ]; then
+    [ -f "$OBERON_SPEC_VALIDATOR" ] && printf '%s' "$OBERON_SPEC_VALIDATOR"
+    return 0
+  fi
+  local root
+  for root in "${CLAUDE_HOME:-$HOME/.claude}" "${AGENTS_HOME:-$HOME/.agents}" "${CODEX_HOME:-$HOME/.codex}"; do
+    if [ -f "$root/skills/spec-driven/scripts/validate_spec.py" ]; then
+      printf '%s' "$root/skills/spec-driven/scripts/validate_spec.py"
+      return 0
+    fi
+  done
+}
+
+# The ref a feature branch is diffed against: origin's HEAD, else origin/main,
+# origin/master. Empty when none resolves.
+repo_default_ref() {
+  local abs="$1" ref
+  ref="$(git -C "$abs" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$ref" ]; then
+    printf '%s' "$ref"
+    return 0
+  fi
+  for ref in origin/main origin/master; do
+    if git -C "$abs" rev-parse -q --verify "$ref" >/dev/null 2>&1; then
+      printf '%s' "$ref"
+      return 0
+    fi
+  done
+}
+
+# PASS / FAIL / unfilled / unknown from a spec-driven validation.md, read the
+# way validate_state.py reads it: the Validation heading or a Result/Verdict
+# line first, the whole file only when neither exists.
+validation_verdict() {
+  local file="$1" hay
+  hay="$(grep -iE '^#{1,4}[[:space:]]*validation\b|(result|verdict)\**[[:space:]]*:' "$file" 2>/dev/null || true)"
+  [ -n "$hay" ] || hay="$(cat "$file")"
+  local p=0 f=0
+  grep -qE '\bPASS\b' <<<"$hay" && p=1
+  grep -qE '\bFAIL\b' <<<"$hay" && f=1
+  if [ "$p" -eq 1 ] && [ "$f" -eq 1 ]; then
+    printf 'unfilled'
+  elif [ "$p" -eq 1 ]; then
+    printf 'PASS'
+  elif [ "$f" -eq 1 ]; then
+    printf 'FAIL'
+  else
+    printf 'unknown'
+  fi
+}
+
+# Contract object for one repo. $2 is the slug the manifest recorded (may be
+# empty); without one, a `feat/<slug>` branch names it only when that folder
+# exists, as the CI check resolves it, so an unrelated feature branch in a
+# shared clone does not read as this project's missing contract.
+contract_json() {
+  local abs="$1" slug="$2" branch="$3" source="manifest"
+  if [ -z "$slug" ]; then
+    source="branch"
+    case "$branch" in
+      feat/*)
+        [ -d "$abs/.specs/features/${branch#feat/}" ] && slug="${branch#feat/}"
+        ;;
+    esac
+  fi
+  if [ -z "$slug" ]; then
+    jq -n -c '{slug:null, source:null}'
+    return 0
+  fi
+
+  local rel=".specs/features/$slug" dir
+  dir="$abs/$rel"
+  local exists=false prd=false spec=false
+  [ -d "$dir" ] && exists=true
+  [ -s "$dir/prd.md" ] && prd=true
+  [ -s "$dir/spec.md" ] && spec=true
+
+  # Validator: true / false, null when the spec or the validator is absent.
+  local spec_valid=null validator
+  validator="$(spec_validator_path)"
+  if [ "$spec" = true ] && [ -n "$validator" ] && command -v python3 >/dev/null 2>&1; then
+    if python3 "$validator" "$dir/spec.md" >/dev/null 2>&1; then
+      spec_valid=true
+    else
+      spec_valid=false
+    fi
+  fi
+
+  # Requirement Traceability: the first cell is the ID, the last the status.
+  # Done = the status's leading word is verified or implemented (older specs
+  # write "Implemented · T16, T18 …").
+  local trace='{"total":0,"done":0}'
+  if [ "$spec" = true ]; then
+    trace="$(awk '
+      /^##[[:space:]]+Requirement Traceability/ { on=1; next }
+      on && /^##[[:space:]]/ { on=0 }
+      on && /^\|/ {
+        n=split($0, c, "|"); id=c[2]; st=c[n-1]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", id); gsub(/^[[:space:]]+|[[:space:]]+$/, "", st)
+        w=tolower(st); sub(/[^a-z].*$/, "", w)
+        if (id ~ /^[A-Z][A-Z0-9]*-[0-9]+$/) { total++; if (w == "verified" || w == "implemented") d++ }
+      }
+      END { printf "{\"total\":%d,\"done\":%d}", total, d }
+    ' "$dir/spec.md")"
+  fi
+
+  local validation=null
+  if [ -f "$dir/validation.md" ]; then
+    validation="\"$(validation_verdict "$dir/validation.md")\""
+  fi
+
+  # in_diff: does this branch touch the feature directory relative to the
+  # default branch? null on the default branch itself, with no base, or when
+  # the folder is not on this branch at all (a clone checked out on other work).
+  local in_diff=null base mb
+  base="$(repo_default_ref "$abs")"
+  if [ "$exists" = true ] && [ -n "$base" ] && [ "$branch" != "${base#origin/}" ] && [ "$branch" != "HEAD" ]; then
+    mb="$(git -C "$abs" merge-base HEAD "$base" 2>/dev/null || true)"
+    if [ -n "$mb" ]; then
+      if [ -n "$(git -C "$abs" diff --name-only "$mb" -- "$rel" 2>/dev/null)" ] \
+         || [ -n "$(git -C "$abs" ls-files --others --exclude-standard -- "$rel" 2>/dev/null)" ]; then
+        in_diff=true
+      else
+        in_diff=false
+      fi
+    fi
+  fi
+
+  jq -n -c \
+    --arg slug "$slug" --arg source "$source" --arg dir "$rel" \
+    --argjson exists "$exists" --argjson prd "$prd" --argjson spec "$spec" \
+    --argjson spec_valid "$spec_valid" --argjson traceability "$trace" \
+    --argjson validation "$validation" --argjson in_diff "$in_diff" '
+      {slug:$slug, source:$source, dir:$dir, exists:$exists, prd:$prd, spec:$spec,
+       spec_valid:$spec_valid, traceability:$traceability,
+       validation:$validation, in_diff:$in_diff}'
+}
+
+# One contributing_repos element JSON for status. $3 is the manifest's
+# contract_slug for this repo, empty when none was recorded.
 status_repo_json() {
   local name="$1"
   local path="$2"
+  local slug="${3:-}"
 
   if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
     jq -n -c --arg name "$name" --arg path "$path" '
-      {name:$name, path:$path, exists:false, branch:null, sha:null, dirty:null}
+      {name:$name, path:$path, exists:false, branch:null, sha:null, dirty:null, contract:null}
     '
     return
   fi
@@ -369,13 +522,17 @@ status_repo_json() {
     dirty=false
   fi
 
+  local contract
+  contract="$(contract_json "$abs" "$slug" "$branch")"
+
   jq -n -c \
     --arg name "$name" \
     --arg path "$path" \
     --arg branch "$branch" \
     --arg sha "$sha" \
-    --argjson dirty "$dirty" '
-      {name:$name, path:$path, exists:true, branch:$branch, sha:$sha, dirty:$dirty}
+    --argjson dirty "$dirty" \
+    --argjson contract "$contract" '
+      {name:$name, path:$path, exists:true, branch:$branch, sha:$sha, dirty:$dirty, contract:$contract}
     '
 }
 
@@ -400,13 +557,14 @@ status_project_json() {
   handoff="$(handoff_summary_json "$dir/HANDOFF.md")"
 
   local repos_json='[]'
-  local n i name path entry
+  local n i name path slug entry
   n="$(jq -r '.contributing_repos // [] | length' "$manifest")"
   i=0
   while [ "$i" -lt "$n" ]; do
     name="$(jq -r --argjson i "$i" '.contributing_repos[$i].name // ""' "$manifest")"
     path="$(jq -r --argjson i "$i" '.contributing_repos[$i].path // ""' "$manifest")"
-    entry="$(status_repo_json "$name" "$path")"
+    slug="$(jq -r --argjson i "$i" '.contributing_repos[$i].contract_slug // ""' "$manifest")"
+    entry="$(status_repo_json "$name" "$path" "$slug")"
     repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$repos_json")"
     i=$((i + 1))
   done
@@ -619,6 +777,39 @@ render_card() {
     i=$((i + 1))
   done
 
+  # Contract: one line per repo that has a slug (manifest or feat/<slug>).
+  local clabel='contract' invalid_seen=0 notdiff_seen=0 crow_count=0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    local c cslug
+    c="$(jq -c --argjson i "$i" '.contributing_repos[$i].contract // null' <<<"$json")"
+    cslug="$(jq -r '.slug // ""' <<<"$c")"
+    if [ -n "$cslug" ]; then
+      local cname parts
+      cname="$(jq -r --argjson i "$i" '.contributing_repos[$i].name' <<<"$json")"
+      parts="$(jq -r '
+        if .exists | not then "folder not on this branch" else
+        [ (if .prd then "prd" else "no prd" end),
+          (if .spec | not then "no spec"
+           elif .spec_valid == true then "spec"
+           elif .spec_valid == false then "spec INVALID"
+           else "spec unchecked" end),
+          (if .traceability.total > 0
+           then "\(.traceability.done)/\(.traceability.total) done" else empty end),
+          (if .validation then "validation \(.validation)" else empty end),
+          (if .in_diff == true then "in diff"
+           elif .in_diff == false then "NOT in diff" else empty end)
+        ] | join(" · ") end' <<<"$c")"
+      card_row "$clabel" "$(card_clip "$cname  $parts" 52)"
+      clabel=''
+      crow_count=$((crow_count + 1))
+      [ "$(jq -r '.spec_valid' <<<"$c")" = "false" ] && invalid_seen=1
+      [ "$(jq -r '.in_diff' <<<"$c")" = "false" ] && notdiff_seen=1
+    fi
+    i=$((i + 1))
+  done
+  [ "$crow_count" -eq 0 ] && [ "$n" -gt 0 ] && card_row "contract" "(no feature slug recorded)"
+
   local hand_row='none'
   if [ "$hpresent" = "true" ]; then
     hand_row="updated $(age_human "$hts")"
@@ -637,6 +828,12 @@ render_card() {
   fi
   if [ "$missing_seen" -eq 1 ]; then
     printf '  ! a contributing repo path no longer exists\n'
+  fi
+  if [ "$invalid_seen" -eq 1 ]; then
+    printf '  ! a spec.md fails validate_spec — the change-contract check flags it\n'
+  fi
+  if [ "$notdiff_seen" -eq 1 ]; then
+    printf '  ! a branch does not touch its .specs/ folder — a feature PR from it is flagged\n'
   fi
   card_rule
 }
@@ -946,8 +1143,20 @@ cmd_path() {
 }
 
 cmd_repo_info() {
-  [ $# -ge 1 ] || die "repo-info: PATH required"
-  local path="$1"
+  local path="" cslug=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --contract)
+        [ $# -ge 2 ] || die "repo-info: --contract requires a value"
+        cslug="$2"; shift 2
+        ;;
+      *)
+        [ -z "$path" ] || die "repo-info: unknown argument: $1"
+        path="$1"; shift
+        ;;
+    esac
+  done
+  [ -n "$path" ] || die "repo-info: PATH required"
   if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'not a git repo: %s\n' "$path" >&2
     exit 5
@@ -970,6 +1179,9 @@ cmd_repo_info() {
     stat="$(printf '%s\n' "$dirty_raw")"
   fi
 
+  local contract
+  contract="$(contract_json "$abs" "$cslug" "$branch")"
+
   jq -n \
     --arg path "$abs" \
     --arg remote "$remote" \
@@ -977,23 +1189,29 @@ cmd_repo_info() {
     --arg sha "$sha" \
     --argjson dirty "$dirty" \
     --arg stat "$stat" \
+    --argjson contract "$contract" \
     '{
       path: $path,
       remote: (if $remote=="" then null else $remote end),
       branch: $branch,
       sha: $sha,
       dirty: $dirty,
-      stat: $stat
+      stat: $stat,
+      contract: $contract
     }'
 }
 
 cmd_attach() {
-  local id="" repo=""
+  local id="" repo="" cslug=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)
         [ $# -ge 2 ] || die "attach: --repo requires a value"
         repo="$2"; shift 2
+        ;;
+      --contract)
+        [ $# -ge 2 ] || die "attach: --contract requires a value"
+        cslug="$2"; shift 2
         ;;
       -h|--help) usage; exit 0 ;;
       *)
@@ -1007,6 +1225,9 @@ cmd_attach() {
   done
   [ -n "$id" ] || die "attach: ID required"
   [ -n "$repo" ] || die "attach: --repo is required"
+  if [ -n "$cslug" ] && ! [[ "$cslug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    die "attach: --contract must be a lower-case kebab slug: $cslug"
+  fi
   require_project "$id"
 
   if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
@@ -1019,7 +1240,8 @@ cmd_attach() {
   rname="$(repo_name_from_path "$abs")"
   manifest="$(project_dir "$id")/project.json"
 
-  # Idempotent: skip if same remote or same path already present
+  # Idempotent: an already-claimed repo (same remote or path) only gains or
+  # changes its contract slug; without --contract it is a no-op commit.
   if jq -e --arg r "$remote" --arg p "$abs" '
       .contributing_repos // []
       | map(select(
@@ -1028,6 +1250,18 @@ cmd_attach() {
         ))
       | length > 0
     ' "$manifest" >/dev/null 2>&1; then
+    if [ -n "$cslug" ]; then
+      tmp="$(mktemp)"
+      jq --arg r "$remote" --arg p "$abs" --arg s "$cslug" --arg ts "$(now_utc)" '
+          .contributing_repos |= map(
+            if (.path == $p) or (($r != "") and (.remote == $r))
+            then .contract_slug = $s else . end)
+          | .updated_at = $ts
+        ' "$manifest" >"$tmp"
+      mv "$tmp" "$manifest"
+      store_commit "$id" "oberon attach $id $rname contract $cslug"
+      return 0
+    fi
     bump_updated_at "$manifest"
     store_commit "$id" "oberon attach $id (noop)"
     return 0
@@ -1037,12 +1271,13 @@ cmd_attach() {
   jq --arg name "$rname" \
      --arg remote "$remote" \
      --arg path "$abs" \
+     --arg s "$cslug" \
      --arg ts "$(now_utc)" '
       .contributing_repos += [{
         name: $name,
         remote: (if $remote=="" then null else $remote end),
         path: $path
-      }]
+      } + (if $s == "" then {} else {contract_slug: $s} end)]
       | .updated_at = $ts
     ' "$manifest" >"$tmp"
   mv "$tmp" "$manifest"

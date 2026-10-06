@@ -42,6 +42,7 @@ In this skill, the ≤2 lines you add are the reading the card cannot do itself:
 - **DIRTY** on a contributing repo means the last sync entry may describe work that is **not in any commit** (ADR-0013). The card prints a `!` line; say what that costs here.
 - **STALE** handoff (the card flags it when `PROGRESS.md` has a newer commit than `HANDOFF.md`) means a cold agent would resume from an out-of-date brief.
 - A `state` row of `_Not started._` with 0 decisions means the store exists but nothing has been designed yet.
+- The `contract` row reads each repo's `.specs/features/<slug>/` as the harness left it. `spec INVALID` or `NOT in diff` means the CI `Change Contract` check flags that repo's PR; `no prd`/`no spec` on a feature means the contract is still owed; `folder not on this branch` means the clone is checked out on other work, so nothing about the contract can be read there; `(no feature slug recorded)` means nobody has run `oberon attach … --contract <slug>` yet (ADR-0019).
 
 Do not dump raw JSON. Do not expand into full decision text or full journal bodies.
 
@@ -51,6 +52,8 @@ End with **at most one** suggested next action, for example:
 
 - any repo `dirty` → `/oberon-sync` (or `oberon-sync`) after the chunk lands in commits, or now if the dirty work is the story
 - `decisions.count` is 0 → `/oberon-grill`
+- a feature repo with `no prd` / `no spec` → the grill's **Hand the contract to the harness** step (`/feature-prd`, then `/feature-spec`, in that repo)
+- contract in place and work not started or mid-way → `/oberon-implement`
 - handoff missing or stale and context is tight → `/oberon-handoff`
 - otherwise omit the suggestion
 

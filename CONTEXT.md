@@ -63,3 +63,21 @@ not of a skill's content.
 A host's mechanism for discovering skills from one root (e.g. omp's `claude`,
 `codex`, and `claude-plugins` providers). Providers are how one installed copy
 becomes visible to several hosts.
+
+**Change contract**:
+The pair `.specs/features/<slug>/prd.md` and `spec.md` that a feature PR owes in
+each repo it changes, checked in CI. Written by the harness skills, read by
+Oberon, never written by it (ADR-0019).
+_Avoid_: spec folder, Oberon spec
+
+**Contract slug**:
+The `<slug>` of a repo's change-contract folder, recorded per contributing repo
+as `contract_slug` in the manifest. Usually `<ticket>-<feature>`, and the same
+in every repo a feature spans.
+_Avoid_: feature id, spec id
+
+**Harness**:
+The organisation's feature skills, `/feature-prd`, `/feature-spec` and
+`/feature-implementation` (with `spec-driven` underneath), which own everything
+under `.specs/`. Distinct from a host, which runs skills.
+_Avoid_: pipeline, spec tooling

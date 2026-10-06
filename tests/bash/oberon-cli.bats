@@ -647,3 +647,168 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$(jq -r '.[0].progress.updated_at' <<<"$output")" =~ $iso ]]
 }
+
+# --- change contract (ADR-0019) -------------------------------------------
+
+# make_feature <slug> <prd?> <statuses...>: write .specs/features/<slug>/ with
+# a spec whose Requirement Traceability rows carry the given statuses.
+make_feature() {
+  local slug="$1" with_prd="$2"; shift 2
+  local dir="$FAKE_REPO/.specs/features/$slug"
+  mkdir -p "$dir"
+  [ "$with_prd" = yes ] && echo "# PRD" >"$dir/prd.md"
+  {
+    echo "# Spec"
+    echo
+    echo "## Requirement Traceability"
+    echo
+    echo "| Requirement ID | Story | Phase | Status |"
+    echo "| --- | --- | --- | --- |"
+    local n=1 st
+    for st in "$@"; do
+      printf '| FT-%02d | story | Execute | %s |\n' "$n" "$st"
+      n=$((n + 1))
+    done
+    echo
+    echo "## After"
+    echo "| FT-99 | not a traceability row | x | Verified |"
+  } >"$dir/spec.md"
+}
+
+# Pin origin/main to the current commit so feature branches have a base.
+pin_origin_main() {
+  git -C "$FAKE_REPO" update-ref refs/remotes/origin/main HEAD
+}
+
+stub_validator() {
+  local code="$1"
+  export OBERON_SPEC_VALIDATOR="${BATS_TEST_TMPDIR}/validate_spec.py"
+  printf 'import sys\nsys.exit(%s)\n' "$code" >"$OBERON_SPEC_VALIDATOR"
+}
+
+@test "repo-info contract: a feat/ branch names the slug only when its folder exists" {
+  pin_origin_main
+  git -C "$FAKE_REPO" checkout -q -b feat/unrelated-work
+  run oberon repo-info "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.contract.slug' <<<"$output")" = "null" ]
+
+  git -C "$FAKE_REPO" checkout -q -b feat/ft-1-widgets
+  make_feature ft-1-widgets yes Pending
+  run oberon repo-info "$FAKE_REPO"
+  [ "$(jq -r '.contract.slug' <<<"$output")" = "ft-1-widgets" ]
+  [ "$(jq -r '.contract.source' <<<"$output")" = "branch" ]
+}
+
+@test "repo-info contract: files, done count from traceability only, verdict, in_diff" {
+  pin_origin_main
+  stub_validator 0
+  git -C "$FAKE_REPO" checkout -q -b feat/ft-2-report
+  make_feature ft-2-report no Verified "Implemented · T3, T4" Pending "In design"
+  printf '## Validation\n\n**Result**: PASS\n' >"$FAKE_REPO/.specs/features/ft-2-report/validation.md"
+
+  run oberon repo-info "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  local c
+  c="$(jq -c '.contract' <<<"$output")"
+  [ "$(jq -r '.prd' <<<"$c")" = "false" ]
+  [ "$(jq -r '.spec' <<<"$c")" = "true" ]
+  [ "$(jq -r '.spec_valid' <<<"$c")" = "true" ]
+  [ "$(jq -r '.traceability.total' <<<"$c")" = "4" ]
+  [ "$(jq -r '.traceability.done' <<<"$c")" = "2" ]
+  [ "$(jq -r '.validation' <<<"$c")" = "PASS" ]
+  # Untracked files under the folder count as touching it.
+  [ "$(jq -r '.in_diff' <<<"$c")" = "true" ]
+
+  # Committed on the branch: still in the diff against origin/main.
+  git -C "$FAKE_REPO" add .specs && git -C "$FAKE_REPO" commit -q -m spec
+  run oberon repo-info "$FAKE_REPO"
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "true" ]
+
+  # A follow-up branch that does not touch the folder is not in the diff.
+  git -C "$FAKE_REPO" update-ref refs/remotes/origin/main HEAD
+  git -C "$FAKE_REPO" checkout -q -b feat/ft-2-report-next
+  echo code >"$FAKE_REPO/code.go"
+  git -C "$FAKE_REPO" add code.go && git -C "$FAKE_REPO" commit -q -m code
+  run oberon repo-info "$FAKE_REPO" --contract ft-2-report
+  [ "$(jq -r '.contract.source' <<<"$output")" = "manifest" ]
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "false" ]
+}
+
+@test "repo-info contract: validator result, unfilled verdict, and absent validator" {
+  git -C "$FAKE_REPO" checkout -q -b feat/ft-3-x
+  make_feature ft-3-x yes Pending
+  printf '**Result**: [PASS | FAIL]\n' >"$FAKE_REPO/.specs/features/ft-3-x/validation.md"
+
+  stub_validator 1
+  run oberon repo-info "$FAKE_REPO"
+  [ "$(jq -r '.contract.spec_valid' <<<"$output")" = "false" ]
+  [ "$(jq -r '.contract.validation' <<<"$output")" = "unfilled" ]
+  # No origin base: in_diff is unknown, not false.
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "null" ]
+
+  export OBERON_SPEC_VALIDATOR="${BATS_TEST_TMPDIR}/missing.py"
+  run oberon repo-info "$FAKE_REPO"
+  [ "$(jq -r '.contract.spec_valid' <<<"$output")" = "null" ]
+}
+
+@test "attach --contract records, updates and validates the slug" {
+  local id
+  id="$(oberon init --name "Contract Slug" --repo "$FAKE_REPO")"
+  run oberon attach "$id" --repo "$FAKE_REPO" --contract ft-4-one
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.contributing_repos[0].contract_slug' "$OBERON_HOME/$id/project.json")" = "ft-4-one" ]
+
+  run oberon attach "$id" --repo "$FAKE_REPO" --contract ft-4-two
+  [ "$(jq -r '.contributing_repos | length' "$OBERON_HOME/$id/project.json")" = "1" ]
+  [ "$(jq -r '.contributing_repos[0].contract_slug' "$OBERON_HOME/$id/project.json")" = "ft-4-two" ]
+
+  # Re-attaching without --contract keeps the recorded slug.
+  run oberon attach "$id" --repo "$FAKE_REPO"
+  [ "$(jq -r '.contributing_repos[0].contract_slug' "$OBERON_HOME/$id/project.json")" = "ft-4-two" ]
+
+  run oberon attach "$id" --repo "$FAKE_REPO" --contract "Bad Slug"
+  [ "$status" -ne 0 ]
+}
+
+@test "card shows a contract row per slugged repo and flags what the check would" {
+  stub_validator 1
+  local id
+  id="$(oberon init --name "Card Contract" --repo "$FAKE_REPO")"
+  oberon attach "$id" --repo "$FAKE_REPO" --contract ft-5-card >/dev/null
+  # The spec is already on main; this follow-up branch only changes code.
+  make_feature ft-5-card yes Verified Pending
+  git -C "$FAKE_REPO" add .specs && git -C "$FAKE_REPO" commit -q -m spec
+  pin_origin_main
+  git -C "$FAKE_REPO" checkout -q -b feat/ft-5-card-code
+  echo code >"$FAKE_REPO/code.go"
+  git -C "$FAKE_REPO" add code.go && git -C "$FAKE_REPO" commit -q -m code
+
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"contract  fake-repo  prd · spec INVALID · 1/2 done · NOT in diff"* ]]
+  [[ "$output" == *"! a spec.md fails validate_spec"* ]]
+  [[ "$output" == *"! a branch does not touch its .specs/ folder"* ]]
+}
+
+@test "card says when no repo has a feature slug" {
+  local id
+  id="$(oberon init --name "No Slug" --repo "$FAKE_REPO")"
+  run oberon card "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"contract  (no feature slug recorded)"* ]]
+}
+
+@test "card says when a recorded contract folder is not on the checked-out branch" {
+  pin_origin_main
+  local id
+  id="$(oberon init --name "Elsewhere" --repo "$FAKE_REPO")"
+  oberon attach "$id" --repo "$FAKE_REPO" --contract ft-6-elsewhere >/dev/null
+  git -C "$FAKE_REPO" checkout -q -b feature/other-ticket
+  run oberon repo-info "$FAKE_REPO" --contract ft-6-elsewhere
+  [ "$(jq -r '.contract.exists' <<<"$output")" = "false" ]
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "null" ]
+  run oberon card "$id"
+  [[ "$output" == *"contract  fake-repo  folder not on this branch"* ]]
+  [[ "$output" != *"! a branch does not touch"* ]]
+}

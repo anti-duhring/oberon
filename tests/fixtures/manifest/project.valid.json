@@ -9,7 +9,8 @@
     {
       "name": "svc-accounts-receivable",
       "remote": "git@github.com:getalternative/svc-accounts-receivable.git",
-      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable"
+      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable",
+      "contract_slug": "alt-120-reminder-workflow"
     }
   ],
   "push_remote": null

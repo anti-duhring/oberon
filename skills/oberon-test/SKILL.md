@@ -38,7 +38,9 @@ From the store:
 - `PROGRESS.md` — `## Current state` and the last entry: what changed recently, therefore what must be covered.
 - `DECISIONS.md` — decisions and facts that bind testing (a `K#` recording that one suite needs a live service, a `D#` choosing integration over unit coverage).
 
-From each contributing repo: `oberon repo-info "<PATH>"` — branch, sha, dirty, stat. The stat tells you which packages the run must actually cover; the sha and dirty flag are what the recorded results are pinned to.
+From each contributing repo: `oberon repo-info "<PATH>"` (with `--contract <slug>` when the manifest records one) — branch, sha, dirty, stat, contract. The stat tells you which packages the run must actually cover; the sha and dirty flag are what the recorded results are pinned to.
+
+When the repo's `contract.validation` is set, the harness Verifier (`spec-driven`, run by `/feature-implementation`) has already written `.specs/features/<slug>/validation.md` — the per-criterion sign-off the CI `Change Contract` check reports. This skill does not write or re-grade it. Report its verdict beside yours, and say plainly when the two disagree (a green suite under a `FAIL` validation, or the reverse): that gap is the finding, not something to reconcile by editing either file (ADR-0019).
 
 ## Reuse or derive the recipe
 
@@ -150,7 +152,7 @@ After the commit, invoke `oberon-sync` for the same project id. It writes the da
 
 ## Report
 
-Report: suites run, verdict per suite, failures with classification, and whether `oberon-sync` appended an entry or no-op'd. No raw test output dumps.
+Report: suites run, verdict per suite, failures with classification, the `validation.md` verdict per repo when one exists, and whether `oberon-sync` appended an entry or no-op'd. No raw test output dumps.
 
 ## The status card comes from `oberon-sync`
 

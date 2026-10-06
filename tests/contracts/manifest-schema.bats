@@ -83,6 +83,19 @@ validate_manifest_schema() {
       echo "validate_manifest_schema: contributing_repos[$i].remote must be string or null" >&2
       return 1
     fi
+    # contract_slug is optional: absent, or a lower-case kebab slug naming
+    # .specs/features/<slug>/ in that repo (ADR-0019).
+    local ct
+    ct="$(jq -r ".contributing_repos[$i].contract_slug | type" "$file")"
+    if [ "$ct" = "string" ]; then
+      if ! jq -r ".contributing_repos[$i].contract_slug" "$file" | grep -qE '^[a-z0-9][a-z0-9-]*$'; then
+        echo "validate_manifest_schema: contributing_repos[$i].contract_slug must be a kebab slug" >&2
+        return 1
+      fi
+    elif [ "$ct" != "null" ]; then
+      echo "validate_manifest_schema: contributing_repos[$i].contract_slug must be string when present" >&2
+      return 1
+    fi
     i=$((i + 1))
   done
 

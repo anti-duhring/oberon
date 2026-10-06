@@ -36,7 +36,7 @@ From `oberon path <id>`:
 - `PROGRESS.md` — especially `## Current state` and the latest journal entry
 - existing `HANDOFF.md` — only to avoid dropping still-true operational notes
 
-For each contributing repo, optionally `oberon repo-info <path>` so branch/sha/dirty in the handoff match reality.
+For each contributing repo, optionally `oberon repo-info <path>` (with `--contract <slug>` when the manifest records one) so branch/sha/dirty and the change contract in the handoff match reality.
 
 ## Write `HANDOFF.md`
 
@@ -51,6 +51,7 @@ For each contributing repo, optionally `oberon repo-info <path>` so branch/sha/d
    - Decisions & knowledge: `DECISIONS.md` (cite specific `D#` / `K#` that still constrain the next move).
    - Progress: `PROGRESS.md` → Current state + last entry date/title.
    - Design docs, PRs, tickets, ADRs in contributing repos: path or URL only.
+   - Change contract, per repo: `.specs/features/<slug>/` path, done/total from its traceability table, the `validation.md` verdict, and the harness's own resume note in that repo's `.specs/STATE.md` when `/feature-implementation` is mid-flight. Point at them; the harness owns their content, and when they disagree with the store the repo's files win (ADR-0019).
 5. **In-flight work** — what this session did that may not yet be in PROGRESS; patches half-finished; commands that must be re-run.
 6. **Blockers and landmines** — ordered by severity; include verification gaps and "do not trust X without re-check".
 7. **Suggested skills** — section listing Oberon (and other) skills the next agent should consider, e.g. `oberon-sync`, `oberon-grill`, host-local helpers. Phrase as invocations the next agent can take, not vague advice.

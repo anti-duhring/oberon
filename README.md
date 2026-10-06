@@ -167,6 +167,7 @@ explicit confirmation.
 | `oberon-status` | yes | runs directly (read-only) |
 | `oberon-sync` | yes | runs directly |
 | `oberon-test` | **no** | user-only (test runs have side effects) |
+| `oberon-implement` | **no** | user-only (drives code changes through the harness) |
 | `oberon-handoff` | yes | (session continuity) |
 | `oberon-delete` | **no** | user-only |
 
@@ -178,6 +179,7 @@ explicit confirmation.
 | `oberon-status` | Read-only TLDR of project state (safe any time) |
 | `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence and refresh `HANDOFF.md` in the same commit |
 | `oberon-test` | Run the suites from `TEST.md`, record results, then call `oberon-sync` |
+| `oberon-implement` | Implement repo by repo through the harness's `/feature-implementation`, gated on each repo's change contract, journalling with `oberon-sync` |
 | `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
 | `oberon-delete` | Remove a store (explicit confirmation required) |
 
@@ -235,7 +237,8 @@ never created automatically. There is no per-store README.
     {
       "name": "svc-accounts-receivable",
       "remote": "git@github.com:getalternative/svc-accounts-receivable.git",
-      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable"
+      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable",
+      "contract_slug": "alt-120-reminder-workflow"
     }
   ],
   "push_remote": null
@@ -244,6 +247,30 @@ never created automatically. There is no per-store README.
 
 `project_status` is exactly `active` or `closed`. `project_id` is a slug of
 `project_name` plus a 4-hex-char suffix. Timestamps are UTC ISO-8601 with `Z`.
+`contract_slug` is optional per repo: the `.specs/features/<slug>/` folder that
+holds that repo's change contract, recorded with `oberon attach --contract`.
+
+## The change contract and the harness
+
+Every `svc-*` pull request is a feature unless it carries `change:fix` or
+`change:chore`, and a feature owes `.specs/features/<slug>/prd.md` and `spec.md`
+in the repo it changes, with the spec in that PR's diff. The harness skills write
+those files: `/feature-prd`, `/feature-spec`, and `/feature-implementation`
+(which drives `spec-driven`'s design, tasks and Verifier). Oberon calls them
+rather than copying them (ADR-0019):
+
+| Oberon | Calls | Oberon keeps |
+|---|---|---|
+| `oberon-grill` | `/feature-prd`, then `/feature-spec`, per repo, seeded from `DECISIONS.md` | the decisions, and each repo's slug on the manifest |
+| `oberon-implement` | `/feature-implementation`, one repo at a time in build order | cross-repo facts and decisions made while building |
+| `oberon-sync`, `oberon-handoff`, `oberon-test` | nothing; they read `.specs/` through `oberon repo-info` | a journal line per repo: done/total, verdict, in diff |
+| `oberon card` | — | a `contract` row per repo, flagging what the CI check would |
+
+The harness owns everything under `.specs/`; Oberon owns the store. Neither
+writes the other's files, and when they disagree the repo wins. The validator is
+found through `OBERON_SPEC_VALIDATOR`, else `spec-driven/scripts/validate_spec.py`
+under the Claude, Agents or Codex skill root; without it the card says
+`spec unchecked`.
 
 ## CLI (`bin/oberon`)
 
@@ -261,8 +288,8 @@ use.
 | `oberon status [ID]` | read-only TLDR payload for one id, or every project claiming the current repo | JSON array of project summaries | exit 4 if none claim the repo; exit 5 if `ID` unknown |
 | `oberon card [ID]` | the same payload rendered as the fixed status card every skill closes with | formatted text, one card per project | exit 4 if none claim the repo; exit 5 if `ID` unknown |
 | `oberon path ID` | absolute store directory | path | exit 5 if unknown |
-| `oberon repo-info PATH` | inspect a contributing repo | JSON `{path,remote,branch,sha,dirty,stat}` | exit 5 if not a repo |
-| `oberon attach ID --repo PATH` | add a contributing repo (idempotent), commit | — | exit 5 if unknown id |
+| `oberon repo-info PATH [--contract SLUG]` | inspect a contributing repo, with its change contract when `--contract` or a `feat/<slug>` branch whose folder exists names one | JSON `{path,remote,branch,sha,dirty,stat,contract}` | exit 5 if not a repo |
+| `oberon attach ID --repo PATH [--contract SLUG]` | add a contributing repo (idempotent), or record its `.specs/features/<slug>/` slug, commit | — | exit 5 if unknown id |
 | `oberon set ID --status active\|closed` | update manifest, commit | — | exit 5 if unknown id |
 | `oberon commit ID -m MSG` | stage `ID/`, commit | — | exit 0 no-op when nothing staged |
 | `oberon delete ID --yes` | `git rm -r` the directory, commit the removal (never rewrite history) | — | exit 6 without `--yes` |

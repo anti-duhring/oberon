@@ -43,7 +43,7 @@ Before Q1, read whatever already exists — do **not** re-ask settled ground:
 
 - Store, when a project resolved: `DECISIONS.md`, `PROGRESS.md`, `HANDOFF.md`, `project.json` (via `oberon path <id>`). Storeless start: skip this — there is nothing to read yet.
 - User-supplied seed (file path or inline description).
-- Contributing repos: layout, existing `CONTEXT.md` / `CONTEXT-MAP.md`, relevant code.
+- Contributing repos: layout, existing `CONTEXT.md` / `CONTEXT-MAP.md`, relevant code, and any change contract already written for this work — `.specs/features/<slug>/prd.md` and `spec.md` (`oberon repo-info <path>` reports the folder when a `feat/<slug>` branch or recorded slug names it). A merged or open PRD/spec is settled ground: grill its gaps, never re-ask it.
 
 Build a mental map of decided vs open. Only grill gaps, contradictions, and under-specified branches. If a question is answerable by reading the codebase, **read the codebase instead of asking**.
 
@@ -229,16 +229,37 @@ If you also edited a contributing repo's `CONTEXT.md` or ADR (user-approved), th
 
 ---
 
+## Hand the contract to the harness
+
+The store never merges, so nothing in `DECISIONS.md` reaches a repo reader or the CI `Change Contract` check on its own. Every `svc-*` PR is a **feature** unless labelled `change:fix` or `change:chore`, and a feature owes `.specs/features/<slug>/prd.md` and `spec.md` in each repo it changes, with the spec in that PR's diff (ADR-0019).
+
+When the tree is resolved, ask one last question in the normal shape: **is this a feature, a fix, or a chore?** Record the answer as a `D#`.
+
+- **Fix or chore:** record the label each PR will carry (`change:fix` / `change:chore`). Nothing else is owed.
+- **Feature:** the harness writes the contract, not Oberon. For each contributing repo the work changes:
+  1. Skip it when `.specs/features/<slug>/` already holds both files — record the slug and move on.
+  2. Otherwise run, in that repo, `/feature-prd <product folder>` and then `/feature-spec <product folder>` (harness skills). Give them this store's `DECISIONS.md` as seed: settled decisions become the PRD's requirements and the spec's Assumptions and acceptance criteria, cited by `D#`. Those skills own the slug, the `feat/<slug>` branch, the requirement IDs and the draft PR; follow them, do not restate them here.
+  3. Record the slug on the manifest so every later card can find the folder:
+
+     ```bash
+     oberon attach <id> --repo <path> --contract <slug>
+     ```
+
+  4. Anything `/feature-spec` reports as a PRD correction, or any decision its read of the code overturns, lands here as a new `D#`/`K#` that names what it supersedes.
+
+Never write `.specs/` files yourself, and never let a harness skill edit the store. If the harness skills are not installed, say so and record the contract as owed in a `K#` rather than drafting the files by hand.
+
 ## Ending
 
 When the tree is resolved:
 
 1. Skim `DECISIONS.md` for holes or contradictions; fix only by appending new D/K numbers.
-2. Final `oberon commit <id> -m "grill: session complete"` if anything is still uncommitted.
-3. Brief close: count of new decisions/facts and any deferred open questions. No Q&A transcript dump.
-4. Close with the status card (below) — it carries the `project_id` and store path, which the user has never seen when this session minted the store.
-5. Optionally offer `oberon-sync` or `oberon-handoff` — do not auto-run them.
-6. If nothing settled, there is no store: say that plainly instead of inventing one, and skip the card — there is nothing to render.
+2. Run **Hand the contract to the harness** (above), unless the user declines it.
+3. Final `oberon commit <id> -m "grill: session complete"` if anything is still uncommitted.
+4. Brief close: count of new decisions/facts, the contract state per repo, and any deferred open questions. No Q&A transcript dump.
+5. Close with the status card (below) — it carries the `project_id` and store path, which the user has never seen when this session minted the store, and a `contract` row per repo.
+6. Optionally offer `oberon-implement`, `oberon-sync` or `oberon-handoff` — do not auto-run them.
+7. If nothing settled, there is no store: say that plainly instead of inventing one, and skip the card — there is nothing to render.
 
 ## Close with the status card
 

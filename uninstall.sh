@@ -19,6 +19,7 @@ SKILLS=(
   oberon-sync
   oberon-status
   oberon-test
+  oberon-implement
   oberon-handoff
   oberon-delete
   write-a-skill

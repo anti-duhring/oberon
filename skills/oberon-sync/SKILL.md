@@ -29,13 +29,13 @@ Store dir: `oberon path <id>`. Read `project.json` only via that path (or `cat` 
 
 1. Read `PROGRESS.md`.
 2. Find the **last journal entry** (below the Current state header).
-3. For each contributing repo path in the manifest, run:
+3. For each contributing repo path in the manifest, run (with `--contract <slug>` when the manifest records a `contract_slug` for that repo):
 
    ```bash
-   oberon repo-info "<PATH>"
+   oberon repo-info "<PATH>" [--contract <slug>]
    ```
 
-   JSON fields: `path`, `remote`, `branch`, `sha`, `dirty` (boolean), `stat` (`--stat`-style summary).
+   JSON fields: `path`, `remote`, `branch`, `sha`, `dirty` (boolean), `stat` (`--stat`-style summary), and `contract` — the repo's change-contract folder as the harness left it: `slug`, `prd`, `spec`, `spec_valid` (null when the validator is not installed), `traceability` (`total`, `done`), `validation` (the Verifier's `validation.md` verdict or null) and `in_diff` (whether this branch touches the folder; null on the default branch).
 
 4. **Do nothing** (no file edit, no commit) when nothing observable changed since that last entry, e.g.:
    - same branch + sha per repo, `dirty` still false, and no new meaningful intent to record; or
@@ -78,6 +78,7 @@ If the file still has a legacy layout, introduce `## Current state` and a journa
 - **One dated entry per invocation.** Never edit an earlier journal entry. Corrections = new entry that says what changed about the earlier claim.
 - **Rewrite `## Current state` wholesale** each successful sync. Hard-bound to a few lines: design settled?, code where?, what blocks next. Not a table of item statuses.
 - **Spine every entry on repo-info.** For each contributing repo touched (at least every repo in the manifest that participated, or all of them if unsure), record path, branch, sha, dirty, stat.
+- **Contract as evidence, never as a copy.** When a repo has a `contract`, add one line: `contract <slug> · prd/spec · spec_valid · <done>/<total> done · validation <verdict> · in diff <true|false>`. The harness (`/feature-implementation` → `spec-driven`) owns `tasks.md`, the traceability statuses and `validation.md`; Oberon reads them and never edits them. When the two disagree, the repo's files win and the entry says so. A feature branch with `in_diff: false` goes into `## Current state` as a blocker for its PR (ADR-0019).
 - **Dirty trees:** if `dirty` is true, the entry **MUST** say it is a **snapshot of unsaved work**, not a verifiable reference — because `HEAD` predates the work described. Do not pretend the sha alone re-derives the change.
 - **Observable density.** Prefer `path:line`, test counts, PR numbers, tag names. "Wired the store" is not enough; "store wired at `routes.go:630`, verified by …" is.
 - UTC date in the heading (or local with explicit offset); keep it honest.
@@ -89,6 +90,7 @@ If the file still has a legacy layout, introduce `## Current state` and a journa
 
 - **repo** `/Users/…/spa-alt-120` · branch `feature/alt-120-reminders-list` · sha `12cf14c…` · dirty `false`
 - stat: 4 files changed, 220 insertions(+)
+- contract `alt-120-reminders` · prd/spec · spec_valid true · 3/8 done · validation — · in diff true
 - `GET /reminders` at `reminders/api.go:29` with `.With(aiInternal)`; 27/27 package tests pass.
 - Gate test mutation-checked: drop middleware → fail, restore → pass.
 ```
