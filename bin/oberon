@@ -473,9 +473,18 @@ contract_json() {
   # in_diff: does this branch touch the feature directory relative to the
   # default branch? null on the default branch itself, with no base, or when
   # the folder is not on this branch at all (a clone checked out on other work).
-  local in_diff=null base mb
+  # Only a branch that names this feature (its slug, or the slug's ticket key
+  # such as alt-265 in a Linear branch) is judged; any other branch is a clone
+  # checked out on other work, and on_feature_branch says so.
+  local in_diff=null base mb on_branch=false ticket lbranch
+  lbranch="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')"
+  ticket="$(printf '%s' "$slug" | grep -oE '^[a-z]+-[0-9]+' || true)"
+  case "$lbranch" in
+    *"$slug"*) on_branch=true ;;
+    *) [ -n "$ticket" ] && [[ "$lbranch" =~ (^|[^a-z0-9])${ticket}($|[^0-9]) ]] && on_branch=true ;;
+  esac
   base="$(repo_default_ref "$abs")"
-  if [ "$exists" = true ] && [ -n "$base" ] && [ "$branch" != "${base#origin/}" ] && [ "$branch" != "HEAD" ]; then
+  if [ "$exists" = true ] && [ "$on_branch" = true ] && [ -n "$base" ] && [ "$branch" != "${base#origin/}" ]; then
     mb="$(git -C "$abs" merge-base HEAD "$base" 2>/dev/null || true)"
     if [ -n "$mb" ]; then
       if [ -n "$(git -C "$abs" diff --name-only "$mb" -- "$rel" 2>/dev/null)" ] \
@@ -491,10 +500,12 @@ contract_json() {
     --arg slug "$slug" --arg source "$source" --arg dir "$rel" \
     --argjson exists "$exists" --argjson prd "$prd" --argjson spec "$spec" \
     --argjson spec_valid "$spec_valid" --argjson traceability "$trace" \
-    --argjson validation "$validation" --argjson in_diff "$in_diff" '
+    --argjson validation "$validation" --argjson in_diff "$in_diff" \
+    --argjson on_branch "$on_branch" --arg branch "$branch" '
       {slug:$slug, source:$source, dir:$dir, exists:$exists, prd:$prd, spec:$spec,
        spec_valid:$spec_valid, traceability:$traceability,
-       validation:$validation, in_diff:$in_diff}'
+       validation:$validation, on_feature_branch:$on_branch, branch:$branch,
+       in_diff:$in_diff}'
 }
 
 # One contributing_repos element JSON for status. $3 is the manifest's
@@ -788,7 +799,8 @@ render_card() {
       local cname parts
       cname="$(jq -r --argjson i "$i" '.contributing_repos[$i].name' <<<"$json")"
       parts="$(jq -r '
-        if .exists | not then "folder not on this branch" else
+        if (.on_feature_branch | not) then "on \(.branch), not this feature"
+        elif (.exists | not) then "folder not on this branch" else
         [ (if .prd then "prd" else "no prd" end),
           (if .spec | not then "no spec"
            elif .spec_valid == true then "spec"

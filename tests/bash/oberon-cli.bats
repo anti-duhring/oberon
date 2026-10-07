@@ -812,3 +812,19 @@ stub_validator() {
   [[ "$output" == *"contract  fake-repo  folder not on this branch"* ]]
   [[ "$output" != *"! a branch does not touch"* ]]
 }
+
+@test "contract on another feature's branch is not judged" {
+  make_feature ft-7-mine yes Pending
+  git -C "$FAKE_REPO" add .specs && git -C "$FAKE_REPO" commit -q -m spec
+  pin_origin_main
+  git -C "$FAKE_REPO" checkout -q -b feature/ft-8-someone-else
+  echo x >"$FAKE_REPO/x" && git -C "$FAKE_REPO" add x && git -C "$FAKE_REPO" commit -q -m x
+  run oberon repo-info "$FAKE_REPO" --contract ft-7-mine
+  [ "$(jq -r '.contract.on_feature_branch' <<<"$output")" = "false" ]
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "null" ]
+  # A Linear-style branch carrying the ticket key counts as this feature.
+  git -C "$FAKE_REPO" checkout -q -b feature/ft-7
+  run oberon repo-info "$FAKE_REPO" --contract ft-7-mine
+  [ "$(jq -r '.contract.on_feature_branch' <<<"$output")" = "true" ]
+  [ "$(jq -r '.contract.in_diff' <<<"$output")" = "false" ]
+}
