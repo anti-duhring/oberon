@@ -1,0 +1,1436 @@
+#!/usr/bin/env bash
+# Oberon store CLI — mutates ~/.oberon (or $OBERON_HOME) project stores.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: oberon <command> [args]
+
+Commands:
+  home                         Print the store repo path
+  init --name NAME [--id ID] [--repo PATH]...
+                               Create a project store and commit it
+  list [--status active|closed|all]
+                               List projects (TSV: id status name)
+  resolve [--repo PATH]        Print project ids claiming a repo
+  status [ID]                  Read-only project status TLDR (JSON array)
+  card [ID]                    Read-only status card (formatted text)
+  path ID                      Print absolute store directory
+  repo-info PATH [--contract SLUG]
+                               Inspect a contributing repo (JSON), with its
+                               change contract when a slug or feat/<slug> names one
+  attach ID --repo PATH [--contract SLUG]
+                               Add a contributing repo (idempotent); --contract
+                               records its .specs/features/<slug>/ folder
+  set ID --status active|closed
+                               Update project status
+  commit ID -m MSG             Stage project dir and commit
+  delete ID --yes              Remove project dir and commit removal
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+now_utc() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+oberon_home() {
+  printf '%s\n' "${OBERON_HOME:-$HOME/.oberon}"
+}
+
+ensure_store_repo() {
+  local home
+  home="$(oberon_home)"
+  if [ ! -d "$home" ]; then
+    mkdir -p "$home"
+  fi
+  if [ ! -d "$home/.git" ]; then
+    git -C "$home" init -q
+  fi
+  # Local identity only when global is unset, so bare machines can commit.
+  if [ -z "$(git config --global user.name 2>/dev/null || true)" ] \
+    && [ -z "$(git -C "$home" config --local user.name 2>/dev/null || true)" ]; then
+    git -C "$home" config --local user.name "Oberon"
+  fi
+  if [ -z "$(git config --global user.email 2>/dev/null || true)" ] \
+    && [ -z "$(git -C "$home" config --local user.email 2>/dev/null || true)" ]; then
+    git -C "$home" config --local user.email "oberon@localhost"
+  fi
+}
+
+project_dir() {
+  local id="$1"
+  printf '%s/%s\n' "$(oberon_home)" "$id"
+}
+
+require_project() {
+  local id="$1"
+  local dir
+  dir="$(project_dir "$id")"
+  if [ ! -f "$dir/project.json" ]; then
+    printf 'unknown project: %s\n' "$id" >&2
+    exit 5
+  fi
+}
+
+abs_path() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$p"
+  else
+    (cd "$p" && pwd -P)
+  fi
+}
+
+slugify() {
+  # lowercase, non-alphanumerics → single '-', trim edges, collapse repeats
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
+}
+
+rand_hex4() {
+  # Prefer /dev/urandom; fall back to RANDOM.
+  if [ -r /dev/urandom ]; then
+    od -An -N2 -tx1 /dev/urandom | tr -d ' \n'
+  else
+    printf '%04x' $((RANDOM % 65536))
+  fi
+}
+
+repo_remote_url() {
+  local path="$1"
+  git -C "$path" remote get-url origin 2>/dev/null || true
+}
+
+repo_name_from_path() {
+  basename "$1"
+}
+
+
+# True when manifest claims repo via remote URL (preferred) or absolute path.
+manifest_claims_repo() {
+  local manifest="$1"
+  local abs="$2"
+  local remote="$3"
+
+  if [ -n "$remote" ]; then
+    if jq -e --arg r "$remote" '
+        .contributing_repos // []
+        | map(.remote // "")
+        | index($r) != null
+      ' "$manifest" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  jq -e --arg p "$abs" '
+      .contributing_repos // []
+      | map(.path // "")
+      | index($p) != null
+    ' "$manifest" >/dev/null 2>&1
+}
+
+# List project ids whose manifest claims the given repo path. Prints one id per
+# line. Exit 4 when none match (same contract as resolve). Exit 5 when path is
+# not a directory / not a git repo.
+resolve_claiming_ids() {
+  local repo_path="$1"
+  if [ ! -d "$repo_path" ]; then
+    printf 'not a directory: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+  if ! git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'not a git repo: %s\n' "$repo_path" >&2
+    exit 5
+  fi
+
+  local abs target_remote home
+  abs="$(abs_path "$repo_path")"
+  target_remote="$(repo_remote_url "$abs")"
+  home="$(oberon_home)"
+
+  local found=0
+  local manifest id
+  for manifest in "$home"/*/project.json; do
+    [ -f "$manifest" ] || continue
+    id="$(jq -r '.project_id' "$manifest")"
+    if manifest_claims_repo "$manifest" "$abs" "$target_remote"; then
+      printf '%s\n' "$id"
+      found=1
+    fi
+  done
+
+  if [ "$found" -eq 0 ]; then
+    exit 4
+  fi
+}
+
+# Epoch seconds → ISO-8601 UTC. Empty in, empty out.
+epoch_to_iso_utc() {
+  local epoch="$1"
+  [ -n "$epoch" ] || return 0
+  date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || true
+}
+
+# Filesystem mtime in epoch seconds; empty when unavailable.
+#
+# GNU syntax is probed first on purpose: `stat -f` on GNU coreutils inspects the
+# *filesystem*, so a BSD-first probe exits 0 on Linux having printed a mount
+# point, and the fallback never runs. BSD `stat` has no `-c`, so it fails
+# cleanly. Both results are digit-checked before use.
+file_mtime_epoch() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  local out
+  out="$(stat -c %Y "$f" 2>/dev/null || true)"
+  case "$out" in
+    ''|*[!0-9]*) out="$(stat -f %m "$f" 2>/dev/null || true)" ;;
+  esac
+  case "$out" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s\n' "$out"
+}
+
+# ISO-8601 UTC *content* time for a store file: the commit that last changed it,
+# falling back to mtime while the file is uncommitted. Checkout mtimes are all
+# equal to clone time, so mtime alone would erase the ordering that makes a
+# handoff stale the moment the store is cloned onto another machine (ADR-0004,
+# ADR-0008, ADR-0017).
+store_file_time_utc() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+
+  local home rel epoch=""
+  home="$(oberon_home)"
+  case "$f" in
+    "$home"/*) rel="${f#"$home"/}" ;;
+    *) rel="" ;;
+  esac
+
+  if [ -n "$rel" ] && git -C "$home" rev-parse --git-dir >/dev/null 2>&1; then
+    # A pending edit (or an untracked file) is newer than any commit, so the
+    # working-tree mtime is the honest answer there.
+    local pending
+    pending="$(git -C "$home" status --porcelain -- "$rel" 2>/dev/null || true)"
+    if [ -z "$pending" ]; then
+      epoch="$(git -C "$home" log -1 --format=%ct -- "$rel" 2>/dev/null || true)"
+    fi
+  fi
+
+  [ -n "$epoch" ] || epoch="$(file_mtime_epoch "$f")"
+  epoch_to_iso_utc "$epoch"
+}
+
+# decisions summary JSON: {count, last_ids} from D<n> entries in DECISIONS.md.
+# oberon-grill writes either a heading (`### D12 — …`) or a table row
+# (`| **D12** | … |`), so both anchors must count. Line-anchored so a prose
+# mention ("Supersedes D7") and the seeded `<!-- … D1, D2 … -->` comment do not.
+decisions_summary_json() {
+  local file="$1"
+  local -a ids=()
+  if [ -f "$file" ]; then
+    local d
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      ids+=("$d")
+    done < <(grep -oE '^(#{1,6}[[:space:]]+|\|[[:space:]]*)\*{0,2}D[0-9]+([^0-9]|$)' "$file" 2>/dev/null \
+               | grep -oE 'D[0-9]+' || true)
+  fi
+
+  # Unique + sort by numeric suffix ascending.
+  local sorted=""
+  if [ "${#ids[@]}" -gt 0 ]; then
+    sorted="$(printf '%s\n' "${ids[@]}" | sed 's/^D//' | sort -n | uniq | sed 's/^/D/')"
+  fi
+
+  local -a ordered=()
+  if [ -n "$sorted" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && ordered+=("$d")
+    done <<<"$sorted"
+  fi
+
+  local count="${#ordered[@]}"
+  local -a last=()
+  if [ "$count" -gt 0 ]; then
+    local start=0
+    if [ "$count" -gt 3 ]; then
+      start=$((count - 3))
+    fi
+    last=("${ordered[@]:$start}")
+  fi
+
+  local last_json
+  if [ "${#last[@]}" -eq 0 ]; then
+    last_json='[]'
+  else
+    last_json="$(printf '%s\n' "${last[@]}" | jq -R . | jq -s -c .)"
+  fi
+  jq -n -c --argjson count "$count" --argjson last_ids "$last_json" \
+    '{count:$count, last_ids:$last_ids}'
+}
+
+# progress summary JSON from PROGRESS.md. `updated_at` is the file mtime — the
+# newest progress signal, which is what makes a handoff stale (ADR-0017).
+progress_summary_json() {
+  local file="$1"
+  local entry_count=0
+  local current_state=""
+  local has_current=0
+  local last_heading=""
+  local updated_at=""
+
+  if [ -f "$file" ]; then
+    if grep -qE '^## Current state[[:space:]]*$' "$file"; then
+      has_current=1
+      current_state="$(
+        awk '
+          /^## Current state[[:space:]]*$/ { p=1; next }
+          /^##+[[:space:]]/ { if (p) exit }
+          p { print }
+        ' "$file" | awk '
+          { lines[++n] = $0 }
+          END {
+            start = 1
+            while (start <= n && lines[start] ~ /^[[:space:]]*$/) start++
+            end = n
+            while (end >= start && lines[end] ~ /^[[:space:]]*$/) end--
+            for (i = start; i <= end; i++) print lines[i]
+          }
+        '
+      )"
+    fi
+
+    local line
+    while IFS= read -r line; do
+      entry_count=$((entry_count + 1))
+      last_heading="$line"
+    done < <(grep -E '^#{2,3}[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' "$file" 2>/dev/null || true)
+  fi
+
+  updated_at="$(store_file_time_utc "$file")"
+
+  if [ "$has_current" -eq 0 ]; then
+    jq -n -c --argjson entry_count "$entry_count" --arg last "$last_heading" --arg ts "$updated_at" '
+      {
+        entry_count: $entry_count,
+        current_state: null,
+        last_entry_heading: (if $last == "" then null else $last end),
+        updated_at: (if $ts == "" then null else $ts end)
+      }'
+  else
+    jq -n -c --argjson entry_count "$entry_count" --arg state "$current_state" --arg last "$last_heading" --arg ts "$updated_at" '
+      {
+        entry_count: $entry_count,
+        current_state: $state,
+        last_entry_heading: (if $last == "" then null else $last end),
+        updated_at: (if $ts == "" then null else $ts end)
+      }'
+  fi
+}
+
+# handoff summary JSON from HANDOFF.md.
+handoff_summary_json() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    jq -n -c '{present:false, updated_at:null}'
+    return
+  fi
+  local ts
+  ts="$(store_file_time_utc "$file")"
+  jq -n -c --arg ts "$ts" '
+    {present:true, updated_at:(if $ts == "" then null else $ts end)}
+  '
+}
+
+# ---------------------------------------------------------------------------
+# Change contract (ADR-0019). The harness feature skills own
+# `.specs/features/<slug>/` in each repo; Oberon only reads it, so sync, status
+# and the card can report where each repo stands without keeping a copy.
+# ---------------------------------------------------------------------------
+
+# The spec validator ships inside the harness `spec-driven` skill. Prefer an
+# explicit override, then the skill roots install.sh also writes to.
+spec_validator_path() {
+  if [ -n "${OBERON_SPEC_VALIDATOR:-}" ]; then
+    [ -f "$OBERON_SPEC_VALIDATOR" ] && printf '%s' "$OBERON_SPEC_VALIDATOR"
+    return 0
+  fi
+  local root
+  for root in "${CLAUDE_HOME:-$HOME/.claude}" "${AGENTS_HOME:-$HOME/.agents}" "${CODEX_HOME:-$HOME/.codex}"; do
+    if [ -f "$root/skills/spec-driven/scripts/validate_spec.py" ]; then
+      printf '%s' "$root/skills/spec-driven/scripts/validate_spec.py"
+      return 0
+    fi
+  done
+}
+
+# The ref a feature branch is diffed against: origin's HEAD, else origin/main,
+# origin/master. Empty when none resolves.
+repo_default_ref() {
+  local abs="$1" ref
+  ref="$(git -C "$abs" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$ref" ]; then
+    printf '%s' "$ref"
+    return 0
+  fi
+  for ref in origin/main origin/master; do
+    if git -C "$abs" rev-parse -q --verify "$ref" >/dev/null 2>&1; then
+      printf '%s' "$ref"
+      return 0
+    fi
+  done
+}
+
+# PASS / FAIL / unfilled / unknown from a spec-driven validation.md, read the
+# way validate_state.py reads it: the Validation heading or a Result/Verdict
+# line first, the whole file only when neither exists.
+validation_verdict() {
+  local file="$1" hay
+  hay="$(grep -iE '^#{1,4}[[:space:]]*validation\b|(result|verdict)\**[[:space:]]*:' "$file" 2>/dev/null || true)"
+  [ -n "$hay" ] || hay="$(cat "$file")"
+  local p=0 f=0
+  grep -qE '\bPASS\b' <<<"$hay" && p=1
+  grep -qE '\bFAIL\b' <<<"$hay" && f=1
+  if [ "$p" -eq 1 ] && [ "$f" -eq 1 ]; then
+    printf 'unfilled'
+  elif [ "$p" -eq 1 ]; then
+    printf 'PASS'
+  elif [ "$f" -eq 1 ]; then
+    printf 'FAIL'
+  else
+    printf 'unknown'
+  fi
+}
+
+# Contract object for one repo. $2 is the slug the manifest recorded (may be
+# empty); without one, a `feat/<slug>` branch names it only when that folder
+# exists, as the CI check resolves it, so an unrelated feature branch in a
+# shared clone does not read as this project's missing contract.
+contract_json() {
+  local abs="$1" slug="$2" branch="$3" source="manifest"
+  if [ -z "$slug" ]; then
+    source="branch"
+    case "$branch" in
+      feat/*)
+        [ -d "$abs/.specs/features/${branch#feat/}" ] && slug="${branch#feat/}"
+        ;;
+    esac
+  fi
+  if [ -z "$slug" ]; then
+    jq -n -c '{slug:null, source:null}'
+    return 0
+  fi
+
+  local rel=".specs/features/$slug" dir
+  dir="$abs/$rel"
+  local exists=false prd=false spec=false
+  [ -d "$dir" ] && exists=true
+  [ -s "$dir/prd.md" ] && prd=true
+  [ -s "$dir/spec.md" ] && spec=true
+
+  # Validator: true / false, null when the spec or the validator is absent.
+  local spec_valid=null validator
+  validator="$(spec_validator_path)"
+  if [ "$spec" = true ] && [ -n "$validator" ] && command -v python3 >/dev/null 2>&1; then
+    if python3 "$validator" "$dir/spec.md" >/dev/null 2>&1; then
+      spec_valid=true
+    else
+      spec_valid=false
+    fi
+  fi
+
+  # Requirement Traceability: the first cell is the ID, the last the status.
+  # Done = the status's leading word is verified or implemented (older specs
+  # write "Implemented · T16, T18 …").
+  local trace='{"total":0,"done":0}'
+  if [ "$spec" = true ]; then
+    trace="$(awk '
+      /^##[[:space:]]+Requirement Traceability/ { on=1; next }
+      on && /^##[[:space:]]/ { on=0 }
+      on && /^\|/ {
+        n=split($0, c, "|"); id=c[2]; st=c[n-1]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", id); gsub(/^[[:space:]]+|[[:space:]]+$/, "", st)
+        w=tolower(st); sub(/[^a-z].*$/, "", w)
+        if (id ~ /^[A-Z][A-Z0-9]*-[0-9]+$/) { total++; if (w == "verified" || w == "implemented") d++ }
+      }
+      END { printf "{\"total\":%d,\"done\":%d}", total, d }
+    ' "$dir/spec.md")"
+  fi
+
+  local validation=null
+  if [ -f "$dir/validation.md" ]; then
+    validation="\"$(validation_verdict "$dir/validation.md")\""
+  fi
+
+  # in_diff: does this branch touch the feature directory relative to the
+  # default branch? null on the default branch itself, with no base, or when
+  # the folder is not on this branch at all (a clone checked out on other work).
+  # Only a branch that names this feature (its slug, or the slug's ticket key
+  # such as alt-265 in a Linear branch) is judged; any other branch is a clone
+  # checked out on other work, and on_feature_branch says so.
+  local in_diff=null base mb on_branch=false ticket lbranch
+  lbranch="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')"
+  ticket="$(printf '%s' "$slug" | grep -oE '^[a-z]+-[0-9]+' || true)"
+  case "$lbranch" in
+    *"$slug"*) on_branch=true ;;
+    *) [ -n "$ticket" ] && [[ "$lbranch" =~ (^|[^a-z0-9])${ticket}($|[^0-9]) ]] && on_branch=true ;;
+  esac
+  base="$(repo_default_ref "$abs")"
+  if [ "$exists" = true ] && [ "$on_branch" = true ] && [ -n "$base" ] && [ "$branch" != "${base#origin/}" ]; then
+    mb="$(git -C "$abs" merge-base HEAD "$base" 2>/dev/null || true)"
+    if [ -n "$mb" ]; then
+      if [ -n "$(git -C "$abs" diff --name-only "$mb" -- "$rel" 2>/dev/null)" ] \
+         || [ -n "$(git -C "$abs" ls-files --others --exclude-standard -- "$rel" 2>/dev/null)" ]; then
+        in_diff=true
+      else
+        in_diff=false
+      fi
+    fi
+  fi
+
+  jq -n -c \
+    --arg slug "$slug" --arg source "$source" --arg dir "$rel" \
+    --argjson exists "$exists" --argjson prd "$prd" --argjson spec "$spec" \
+    --argjson spec_valid "$spec_valid" --argjson traceability "$trace" \
+    --argjson validation "$validation" --argjson in_diff "$in_diff" \
+    --argjson on_branch "$on_branch" --arg branch "$branch" '
+      {slug:$slug, source:$source, dir:$dir, exists:$exists, prd:$prd, spec:$spec,
+       spec_valid:$spec_valid, traceability:$traceability,
+       validation:$validation, on_feature_branch:$on_branch, branch:$branch,
+       in_diff:$in_diff}'
+}
+
+# One contributing_repos element JSON for status. $3 is the manifest's
+# contract_slug for this repo, empty when none was recorded.
+status_repo_json() {
+  local name="$1"
+  local path="$2"
+  local slug="${3:-}"
+
+  if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    jq -n -c --arg name "$name" --arg path "$path" '
+      {name:$name, path:$path, exists:false, branch:null, sha:null, dirty:null, contract:null}
+    '
+    return
+  fi
+
+  local abs branch sha dirty_raw dirty
+  abs="$(abs_path "$path")"
+  branch="$(git -C "$abs" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'HEAD')"
+  sha="$(git -C "$abs" rev-parse --short HEAD 2>/dev/null || printf '')"
+  dirty_raw="$(git -C "$abs" status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty_raw" ]; then
+    dirty=true
+  else
+    dirty=false
+  fi
+
+  local contract
+  contract="$(contract_json "$abs" "$slug" "$branch")"
+
+  jq -n -c \
+    --arg name "$name" \
+    --arg path "$path" \
+    --arg branch "$branch" \
+    --arg sha "$sha" \
+    --argjson dirty "$dirty" \
+    --argjson contract "$contract" '
+      {name:$name, path:$path, exists:true, branch:$branch, sha:$sha, dirty:$dirty, contract:$contract}
+    '
+}
+
+# Full status object for one project id (must exist).
+status_project_json() {
+  local id="$1"
+  local dir manifest
+  dir="$(project_dir "$id")"
+  manifest="$dir/project.json"
+
+  local project_id project_name project_status created_at updated_at store_path
+  project_id="$(jq -r '.project_id' "$manifest")"
+  project_name="$(jq -r '.project_name' "$manifest")"
+  project_status="$(jq -r '.project_status' "$manifest")"
+  created_at="$(jq -r '.created_at' "$manifest")"
+  updated_at="$(jq -r '.updated_at' "$manifest")"
+  store_path="$dir"
+
+  local decisions progress handoff
+  decisions="$(decisions_summary_json "$dir/DECISIONS.md")"
+  progress="$(progress_summary_json "$dir/PROGRESS.md")"
+  handoff="$(handoff_summary_json "$dir/HANDOFF.md")"
+
+  local repos_json='[]'
+  local n i name path slug entry
+  n="$(jq -r '.contributing_repos // [] | length' "$manifest")"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    name="$(jq -r --argjson i "$i" '.contributing_repos[$i].name // ""' "$manifest")"
+    path="$(jq -r --argjson i "$i" '.contributing_repos[$i].path // ""' "$manifest")"
+    slug="$(jq -r --argjson i "$i" '.contributing_repos[$i].contract_slug // ""' "$manifest")"
+    entry="$(status_repo_json "$name" "$path" "$slug")"
+    repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$repos_json")"
+    i=$((i + 1))
+  done
+
+  jq -n -c \
+    --arg project_id "$project_id" \
+    --arg project_name "$project_name" \
+    --arg project_status "$project_status" \
+    --arg created_at "$created_at" \
+    --arg updated_at "$updated_at" \
+    --arg store_path "$store_path" \
+    --argjson decisions "$decisions" \
+    --argjson progress "$progress" \
+    --argjson handoff "$handoff" \
+    --argjson contributing_repos "$repos_json" '
+      {
+        project_id: $project_id,
+        project_name: $project_name,
+        project_status: $project_status,
+        created_at: $created_at,
+        updated_at: $updated_at,
+        store_path: $store_path,
+        decisions: $decisions,
+        progress: $progress,
+        handoff: $handoff,
+        contributing_repos: $contributing_repos
+      }'
+}
+
+# ---------------------------------------------------------------------------
+# Card rendering (ADR-0017): one fixed, CLI-owned layout every skill closes
+# with, so a sync, a handoff, a grill and a status report all look the same.
+# ---------------------------------------------------------------------------
+
+CARD_WIDTH=64
+
+# Does *this* shell, right now, treat a 3-byte character as one character? That
+# is the only property the card needs, and it is cheaper and more truthful to
+# measure it than to pattern-match locale names (a locale can be present in
+# `locale -a` and still not drive bash's multibyte handling).
+card_locale_is_utf8() {
+  local probe='─'
+  [ "${#probe}" -eq 1 ]
+}
+
+# The card draws box rules and clips at character boundaries, both of which are
+# byte-wise nonsense under a C locale. Switch to a UTF-8 locale when the
+# environment has not picked a working one; bash re-runs setlocale on
+# assignment, so the probe above sees the change immediately.
+card_force_utf8_locale() {
+  card_locale_is_utf8 && return 0
+
+  local had_lc_all="${LC_ALL+set}"
+  local saved="${LC_ALL:-}"
+  # Capture the list rather than piping into grep -q: under `pipefail` the
+  # early-exiting grep SIGPIPEs `locale`, and the match would be thrown away.
+  local avail
+  avail="$(locale -a 2>/dev/null || true)"
+  local cand
+  for cand in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+    case $'\n'"$avail"$'\n' in
+      *$'\n'"$cand"$'\n'*) ;;
+      *) continue ;;
+    esac
+    export LC_ALL="$cand"
+    card_locale_is_utf8 && return 0
+  done
+
+  # Nothing usable: leave the environment exactly as we found it and render
+  # byte-wise rather than under a locale we just proved does not work.
+  if [ -n "$had_lc_all" ]; then
+    export LC_ALL="$saved"
+  else
+    unset LC_ALL
+  fi
+}
+
+# Epoch seconds from an ISO-8601 UTC timestamp. Empty when unparseable.
+epoch_from_iso() {
+  local iso="$1"
+  case "$iso" in
+    ""|null) return 0 ;;
+  esac
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return 0
+  date -u -d "$iso" +%s 2>/dev/null || true
+}
+
+# "3h ago" / "2d ago" / "just now" from an ISO-8601 timestamp.
+age_human() {
+  local epoch
+  epoch="$(epoch_from_iso "$1")"
+  [ -n "$epoch" ] || { printf 'unknown'; return 0; }
+  local delta=$(( $(date -u +%s) - epoch ))
+  [ "$delta" -lt 0 ] && delta=0
+  if [ "$delta" -lt 60 ]; then
+    printf 'just now'
+  elif [ "$delta" -lt 3600 ]; then
+    printf '%dm ago' $(( delta / 60 ))
+  elif [ "$delta" -lt 172800 ]; then
+    printf '%dh ago' $(( delta / 3600 ))
+  else
+    printf '%dd ago' $(( delta / 86400 ))
+  fi
+}
+
+# First line of a value, hard-clipped to N characters. HTML comments and blank
+# lines are dropped first (the seeded store files carry both), so a one-line
+# value never picks up a spurious "…" continuation marker.
+card_clip() {
+  local text="$1" max="$2"
+  local body first rest
+  body="$(printf '%s\n' "$text" \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^#+[[:space:]]*//' \
+    | grep -vE '^(<!--|$)' || true)"
+  first="${body%%$'\n'*}"
+  rest="$(printf '%s' "${body#"$first"}" | tr -d '\n')"
+  if [ "${#first}" -gt "$max" ]; then
+    printf '%s…' "${first:0:$((max - 1))}"
+  elif [ -n "$rest" ]; then
+    printf '%s …' "$first"
+  else
+    printf '%s' "$first"
+  fi
+}
+
+card_rule() {
+  local label="${1:-}"
+  local fill="$CARD_WIDTH"
+  if [ -n "$label" ]; then
+    printf '── %s ' "$label"
+    fill=$(( CARD_WIDTH - ${#label} - 4 ))
+  fi
+  [ "$fill" -lt 0 ] && fill=0
+  local pad
+  printf -v pad '%*s' "$fill" ''
+  printf '%s\n' "${pad// /─}"
+}
+
+card_row() {
+  printf '  %-9s %s\n' "$1" "$2"
+}
+
+# Render one status object (stdin-free, JSON in $1) as a card.
+render_card() {
+  local json="$1"
+  card_force_utf8_locale
+
+  local id name pstatus updated state dcount dlast phead hpresent hts pts store
+  id="$(jq -r '.project_id' <<<"$json")"
+  name="$(jq -r '.project_name' <<<"$json")"
+  pstatus="$(jq -r '.project_status' <<<"$json")"
+  updated="$(jq -r '.updated_at // ""' <<<"$json")"
+  store="$(jq -r '.store_path' <<<"$json")"
+  case "$store" in
+    "$HOME"/*) store="~${store#"$HOME"}" ;;
+  esac
+  state="$(jq -r '.progress.current_state // ""' <<<"$json")"
+  dcount="$(jq -r '.decisions.count' <<<"$json")"
+  dlast="$(jq -r '.decisions.last_ids | join(" ")' <<<"$json")"
+  phead="$(jq -r '.progress.last_entry_heading // ""' <<<"$json")"
+  pts="$(jq -r '.progress.updated_at // ""' <<<"$json")"
+  hpresent="$(jq -r '.handoff.present' <<<"$json")"
+  hts="$(jq -r '.handoff.updated_at // ""' <<<"$json")"
+
+  card_rule "oberon"
+  card_row "project" "$(card_clip "$name" 52)"
+  card_row "id" "$id"
+  card_row "status" "$pstatus · updated $(age_human "$updated")"
+
+  local state_row='(none yet)'
+  [ -n "$state" ] && state_row="$(card_clip "$state" 52)"
+  card_row "state" "$state_row"
+
+  local dec_row="$dcount"
+  if [ "$dcount" -eq 0 ]; then
+    dec_row='0 — nothing settled yet'
+  elif [ -n "$dlast" ]; then
+    dec_row="$dcount · last $dlast"
+  fi
+  card_row "decisions" "$dec_row"
+
+  local prog_row='(no journal entries)'
+  [ -n "$phead" ] && prog_row="$(card_clip "$phead" 52)"
+  card_row "progress" "$prog_row"
+
+  # Repos: one line each, first line carries the label.
+  local n=0 i=0 label='repos' dirty_seen=0 missing_seen=0
+  n="$(jq -r '.contributing_repos | length' <<<"$json")"
+  if [ "$n" -eq 0 ]; then
+    card_row "repos" "(none attached)"
+  fi
+  while [ "$i" -lt "$n" ]; do
+    local rname rexists rbranch rsha rdirty row
+    rname="$(jq -r --argjson i "$i" '.contributing_repos[$i].name' <<<"$json")"
+    rexists="$(jq -r --argjson i "$i" '.contributing_repos[$i].exists' <<<"$json")"
+    rbranch="$(jq -r --argjson i "$i" '.contributing_repos[$i].branch // ""' <<<"$json")"
+    rsha="$(jq -r --argjson i "$i" '.contributing_repos[$i].sha // ""' <<<"$json")"
+    rdirty="$(jq -r --argjson i "$i" '.contributing_repos[$i].dirty' <<<"$json")"
+    if [ "$rexists" != "true" ]; then
+      row="$rname  MISSING"
+      missing_seen=1
+    elif [ "$rdirty" = "true" ]; then
+      row="$rname  ${rbranch}@${rsha}  DIRTY"
+      dirty_seen=1
+    else
+      row="$rname  ${rbranch}@${rsha}  clean"
+    fi
+    card_row "$label" "$row"
+    label=''
+    i=$((i + 1))
+  done
+
+  # Contract: one line per repo that has a slug (manifest or feat/<slug>).
+  local clabel='contract' invalid_seen=0 notdiff_seen=0 crow_count=0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    local c cslug
+    c="$(jq -c --argjson i "$i" '.contributing_repos[$i].contract // null' <<<"$json")"
+    cslug="$(jq -r '.slug // ""' <<<"$c")"
+    if [ -n "$cslug" ]; then
+      local cname parts
+      cname="$(jq -r --argjson i "$i" '.contributing_repos[$i].name' <<<"$json")"
+      parts="$(jq -r '
+        if (.on_feature_branch | not) then "on \(.branch), not this feature"
+        elif (.exists | not) then "folder not on this branch" else
+        [ (if .prd then "prd" else "no prd" end),
+          (if .spec | not then "no spec"
+           elif .spec_valid == true then "spec"
+           elif .spec_valid == false then "spec INVALID"
+           else "spec unchecked" end),
+          (if .traceability.total > 0
+           then "\(.traceability.done)/\(.traceability.total) done" else empty end),
+          (if .validation then "validation \(.validation)" else empty end),
+          (if .in_diff == true then "in diff"
+           elif .in_diff == false then "NOT in diff" else empty end)
+        ] | join(" · ") end' <<<"$c")"
+      card_row "$clabel" "$(card_clip "$cname  $parts" 52)"
+      clabel=''
+      crow_count=$((crow_count + 1))
+      [ "$(jq -r '.spec_valid' <<<"$c")" = "false" ] && invalid_seen=1
+      [ "$(jq -r '.in_diff' <<<"$c")" = "false" ] && notdiff_seen=1
+    fi
+    i=$((i + 1))
+  done
+  [ "$crow_count" -eq 0 ] && [ "$n" -gt 0 ] && card_row "contract" "(no feature slug recorded)"
+
+  local hand_row='none'
+  if [ "$hpresent" = "true" ]; then
+    hand_row="updated $(age_human "$hts")"
+    local he pe
+    he="$(epoch_from_iso "$hts")"
+    pe="$(epoch_from_iso "$pts")"
+    if [ -n "$he" ] && [ -n "$pe" ] && [ "$he" -lt "$pe" ]; then
+      hand_row="$hand_row · STALE (progress is newer)"
+    fi
+  fi
+  card_row "handoff" "$hand_row"
+  card_row "store" "$store"
+
+  if [ "$dirty_seen" -eq 1 ]; then
+    printf '  ! dirty tree — described work may not be in any commit\n'
+  fi
+  if [ "$missing_seen" -eq 1 ]; then
+    printf '  ! a contributing repo path no longer exists\n'
+  fi
+  if [ "$invalid_seen" -eq 1 ]; then
+    printf '  ! a spec.md fails validate_spec — the change-contract check flags it\n'
+  fi
+  if [ "$notdiff_seen" -eq 1 ]; then
+    printf '  ! a branch does not touch its .specs/ folder — a feature PR from it is flagged\n'
+  fi
+  card_rule
+}
+
+bump_updated_at() {
+  local manifest="$1"
+  local ts
+  ts="$(now_utc)"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg ts "$ts" '.updated_at = $ts' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+}
+
+maybe_push() {
+  local id="$1"
+  local manifest
+  manifest="$(project_dir "$id")/project.json"
+  local remote
+  remote="$(jq -r '.push_remote // empty' "$manifest")"
+  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+    git -C "$(oberon_home)" push -q "$remote" HEAD || true
+  fi
+}
+
+store_commit() {
+  # Stage ONLY the project directory, commit if staged content differs.
+  # Returns 0 always for no-op (nothing staged). Prints nothing.
+  local id="$1"
+  local msg="$2"
+  local home
+  home="$(oberon_home)"
+  git -C "$home" add -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  git -C "$home" commit -q -m "$msg"
+  maybe_push "$id"
+}
+
+seed_decisions() {
+  cat >"$1" <<'EOF'
+# Decisions
+
+Load-bearing facts and numbered decisions for this project.
+
+<!-- Append decisions as D1, D2, … — never renumber. -->
+EOF
+}
+
+seed_progress() {
+  cat >"$1" <<'EOF'
+# Progress
+
+## Current state
+
+_Not started._
+
+<!-- Sync rewrites the Current state block; dated entries below are append-only. -->
+EOF
+}
+
+seed_handoff() {
+  cat >"$1" <<'EOF'
+# Handoff
+
+_No handoff yet._
+EOF
+}
+
+cmd_home() {
+  printf '%s\n' "$(oberon_home)"
+}
+
+cmd_init() {
+  local name="" id="" 
+  local -a repos=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)
+        [ $# -ge 2 ] || die "init: --name requires a value"
+        name="$2"; shift 2
+        ;;
+      --id)
+        [ $# -ge 2 ] || die "init: --id requires a value"
+        id="$2"; shift 2
+        ;;
+      --repo)
+        [ $# -ge 2 ] || die "init: --repo requires a value"
+        repos+=("$2"); shift 2
+        ;;
+      -h|--help)
+        usage; exit 0
+        ;;
+      *)
+        die "init: unknown argument: $1"
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "init: --name is required"
+
+  ensure_store_repo
+  local home
+  home="$(oberon_home)"
+
+  if [ -n "$id" ]; then
+    if [ -e "$(project_dir "$id")" ]; then
+      printf 'project id already taken: %s\n' "$id" >&2
+      exit 3
+    fi
+  else
+    local slug suffix attempt
+    slug="$(slugify "$name")"
+    [ -n "$slug" ] || die "init: --name produced an empty slug"
+    attempt=0
+    while :; do
+      attempt=$((attempt + 1))
+      if [ "$attempt" -gt 32 ]; then
+        die "init: could not mint a unique id after 32 attempts"
+      fi
+      suffix="$(rand_hex4)"
+      id="${slug}-${suffix}"
+      [ ! -e "$(project_dir "$id")" ] && break
+    done
+  fi
+
+  local dir ts
+  dir="$(project_dir "$id")"
+  ts="$(now_utc)"
+  mkdir -p "$dir"
+
+  # Build contributing_repos JSON array
+  local repos_json='[]'
+  local r abs remote rname entry
+  for r in "${repos[@]+"${repos[@]}"}"; do
+    if [ ! -d "$r/.git" ] && ! git -C "$r" rev-parse --git-dir >/dev/null 2>&1; then
+      die "init: not a git repo: $r"
+    fi
+    abs="$(abs_path "$r")"
+    remote="$(repo_remote_url "$abs")"
+    rname="$(repo_name_from_path "$abs")"
+    entry="$(jq -n \
+      --arg name "$rname" \
+      --arg remote "$remote" \
+      --arg path "$abs" \
+      '{name:$name, remote:(if $remote=="" then null else $remote end), path:$path}')"
+    repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$repos_json")"
+  done
+
+  jq -n \
+    --argjson schema 1 \
+    --arg project_id "$id" \
+    --arg project_name "$name" \
+    --arg project_status "active" \
+    --arg created_at "$ts" \
+    --arg updated_at "$ts" \
+    --argjson contributing_repos "$repos_json" \
+    '{
+      schema: $schema,
+      project_id: $project_id,
+      project_name: $project_name,
+      project_status: $project_status,
+      created_at: $created_at,
+      updated_at: $updated_at,
+      contributing_repos: $contributing_repos,
+      push_remote: null
+    }' >"$dir/project.json"
+
+  seed_decisions "$dir/DECISIONS.md"
+  seed_progress "$dir/PROGRESS.md"
+  seed_handoff "$dir/HANDOFF.md"
+
+  store_commit "$id" "oberon init $id"
+  printf '%s\n' "$id"
+}
+
+cmd_list() {
+  local status_filter="active"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)
+        [ $# -ge 2 ] || die "list: --status requires a value"
+        status_filter="$2"; shift 2
+        case "$status_filter" in
+          active|closed|all) ;;
+          *) die "list: --status must be active|closed|all" ;;
+        esac
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "list: unknown argument: $1" ;;
+    esac
+  done
+
+  local home
+  home="$(oberon_home)"
+  [ -d "$home" ] || return 0
+
+  local manifest id st name
+  # shellcheck disable=SC2012
+  for manifest in "$home"/*/project.json; do
+    [ -f "$manifest" ] || continue
+    id="$(jq -r '.project_id' "$manifest")"
+    st="$(jq -r '.project_status' "$manifest")"
+    name="$(jq -r '.project_name' "$manifest")"
+    if [ "$status_filter" = "all" ] || [ "$st" = "$status_filter" ]; then
+      printf '%s\t%s\t%s\n' "$id" "$st" "$name"
+    fi
+  done
+}
+
+cmd_resolve() {
+  local repo_path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ $# -ge 2 ] || die "resolve: --repo requires a value"
+        repo_path="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        # bare path accepted as convenience
+        if [ -z "$repo_path" ] && [ -d "$1" ]; then
+          repo_path="$1"; shift
+        else
+          die "resolve: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  if [ -z "$repo_path" ]; then
+    repo_path="."
+  fi
+  resolve_claiming_ids "$repo_path"
+}
+
+# Shared id resolution for the two read-only reporters (status, card): explicit
+# id, else every project claiming the current repo. Prints one id per line;
+# propagates exit 4 (nothing claims the repo) and 5 (unknown id).
+resolve_report_ids() {
+  local cmd="$1" id="$2"
+  if [ -n "$id" ]; then
+    require_project "$id"
+    printf '%s\n' "$id"
+    return 0
+  fi
+  # Capture so exit 4/5 from resolve_claiming_ids propagates (process
+  # substitution would swallow the status under set -e).
+  local resolved
+  resolved="$(resolve_claiming_ids ".")" || exit $?
+  printf '%s\n' "$resolved"
+}
+
+# Single optional positional ID for status/card. Sets REPORT_ID rather than
+# printing it, so `-h` can still exit the process instead of a subshell.
+REPORT_ID=""
+parse_report_id() {
+  local cmd="$1"; shift
+  REPORT_ID=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$REPORT_ID" ]; then
+          REPORT_ID="$1"; shift
+        else
+          die "$cmd: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+}
+
+cmd_status() {
+  local ids_raw line
+  parse_report_id status "$@"
+  ids_raw="$(resolve_report_ids status "$REPORT_ID")"
+
+  local out='[]'
+  local entry
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    entry="$(status_project_json "$line")"
+    out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")"
+  done <<<"$ids_raw"
+  printf '%s\n' "$out"
+}
+
+cmd_card() {
+  local ids_raw line
+  parse_report_id card "$@"
+  ids_raw="$(resolve_report_ids card "$REPORT_ID")"
+
+  local first=1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$first" -eq 1 ] || printf '\n'
+    first=0
+    render_card "$(status_project_json "$line")"
+  done <<<"$ids_raw"
+}
+
+cmd_path() {
+  [ $# -ge 1 ] || die "path: ID required"
+  local id="$1"
+  require_project "$id"
+  project_dir "$id"
+}
+
+cmd_repo_info() {
+  local path="" cslug=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --contract)
+        [ $# -ge 2 ] || die "repo-info: --contract requires a value"
+        cslug="$2"; shift 2
+        ;;
+      *)
+        [ -z "$path" ] || die "repo-info: unknown argument: $1"
+        path="$1"; shift
+        ;;
+    esac
+  done
+  [ -n "$path" ] || die "repo-info: PATH required"
+  if [ ! -d "$path" ] || ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'not a git repo: %s\n' "$path" >&2
+    exit 5
+  fi
+  local abs remote branch sha dirty_raw dirty stat
+  abs="$(abs_path "$path")"
+  remote="$(repo_remote_url "$abs")"
+  branch="$(git -C "$abs" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'HEAD')"
+  sha="$(git -C "$abs" rev-parse HEAD 2>/dev/null || printf '')"
+  dirty_raw="$(git -C "$abs" status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty_raw" ]; then
+    dirty=true
+  else
+    dirty=false
+  fi
+  # --stat-style summary of working tree vs HEAD (empty when clean)
+  stat="$(git -C "$abs" diff --stat HEAD 2>/dev/null || true)"
+  if [ -z "$stat" ] && [ -n "$dirty_raw" ]; then
+    # untracked-only dirty tree: summarise porcelain
+    stat="$(printf '%s\n' "$dirty_raw")"
+  fi
+
+  local contract
+  contract="$(contract_json "$abs" "$cslug" "$branch")"
+
+  jq -n \
+    --arg path "$abs" \
+    --arg remote "$remote" \
+    --arg branch "$branch" \
+    --arg sha "$sha" \
+    --argjson dirty "$dirty" \
+    --arg stat "$stat" \
+    --argjson contract "$contract" \
+    '{
+      path: $path,
+      remote: (if $remote=="" then null else $remote end),
+      branch: $branch,
+      sha: $sha,
+      dirty: $dirty,
+      stat: $stat,
+      contract: $contract
+    }'
+}
+
+cmd_attach() {
+  local id="" repo="" cslug=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ $# -ge 2 ] || die "attach: --repo requires a value"
+        repo="$2"; shift 2
+        ;;
+      --contract)
+        [ $# -ge 2 ] || die "attach: --contract requires a value"
+        cslug="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "attach: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "attach: ID required"
+  [ -n "$repo" ] || die "attach: --repo is required"
+  if [ -n "$cslug" ] && ! [[ "$cslug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    die "attach: --contract must be a lower-case kebab slug: $cslug"
+  fi
+  require_project "$id"
+
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    die "attach: not a git repo: $repo"
+  fi
+
+  local abs remote rname manifest tmp
+  abs="$(abs_path "$repo")"
+  remote="$(repo_remote_url "$abs")"
+  rname="$(repo_name_from_path "$abs")"
+  manifest="$(project_dir "$id")/project.json"
+
+  # Idempotent: an already-claimed repo (same remote or path) only gains or
+  # changes its contract slug; without --contract it is a no-op commit.
+  if jq -e --arg r "$remote" --arg p "$abs" '
+      .contributing_repos // []
+      | map(select(
+          (.path == $p) or
+          (($r != "") and (.remote == $r))
+        ))
+      | length > 0
+    ' "$manifest" >/dev/null 2>&1; then
+    if [ -n "$cslug" ]; then
+      tmp="$(mktemp)"
+      jq --arg r "$remote" --arg p "$abs" --arg s "$cslug" --arg ts "$(now_utc)" '
+          .contributing_repos |= map(
+            if (.path == $p) or (($r != "") and (.remote == $r))
+            then .contract_slug = $s else . end)
+          | .updated_at = $ts
+        ' "$manifest" >"$tmp"
+      mv "$tmp" "$manifest"
+      store_commit "$id" "oberon attach $id $rname contract $cslug"
+      return 0
+    fi
+    bump_updated_at "$manifest"
+    store_commit "$id" "oberon attach $id (noop)"
+    return 0
+  fi
+
+  tmp="$(mktemp)"
+  jq --arg name "$rname" \
+     --arg remote "$remote" \
+     --arg path "$abs" \
+     --arg s "$cslug" \
+     --arg ts "$(now_utc)" '
+      .contributing_repos += [{
+        name: $name,
+        remote: (if $remote=="" then null else $remote end),
+        path: $path
+      } + (if $s == "" then {} else {contract_slug: $s} end)]
+      | .updated_at = $ts
+    ' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  store_commit "$id" "oberon attach $id +$rname"
+}
+
+cmd_set() {
+  local id="" status=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)
+        [ $# -ge 2 ] || die "set: --status requires a value"
+        status="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "set: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "set: ID required"
+  [ -n "$status" ] || die "set: --status is required"
+  case "$status" in
+    active|closed) ;;
+    *) die "set: --status must be active|closed" ;;
+  esac
+  require_project "$id"
+
+  local manifest tmp
+  manifest="$(project_dir "$id")/project.json"
+  tmp="$(mktemp)"
+  jq --arg st "$status" --arg ts "$(now_utc)" '
+      .project_status = $st | .updated_at = $ts
+    ' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  store_commit "$id" "oberon set $id status=$status"
+}
+
+cmd_commit() {
+  local id="" msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m)
+        [ $# -ge 2 ] || die "commit: -m requires a value"
+        msg="$2"; shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "commit: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "commit: ID required"
+  [ -n "$msg" ] || die "commit: -m MSG required"
+  require_project "$id"
+
+  local home
+  home="$(oberon_home)"
+  # Stage first. If the project tree is already identical to HEAD, nothing is
+  # staged and we exit 0 without an empty commit (and without a spurious
+  # updated_at-only commit).
+  git -C "$home" add -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  bump_updated_at "$(project_dir "$id")/project.json"
+  store_commit "$id" "$msg"
+}
+
+cmd_delete() {
+  local id="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes) yes=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        if [ -z "$id" ]; then
+          id="$1"; shift
+        else
+          die "delete: unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$id" ] || die "delete: ID required"
+  if [ "$yes" -ne 1 ]; then
+    printf 'delete requires --yes\n' >&2
+    exit 6
+  fi
+  require_project "$id"
+
+  local home
+  home="$(oberon_home)"
+  # Capture push_remote before removal
+  local remote
+  remote="$(jq -r '.push_remote // empty' "$(project_dir "$id")/project.json")"
+
+  git -C "$home" rm -rq -- "$id"
+  if git -C "$home" diff --cached --quiet; then
+    return 0
+  fi
+  git -C "$home" commit -q -m "oberon delete $id"
+  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+    git -C "$home" push -q "$remote" HEAD || true
+  fi
+}
+
+main() {
+  if [ $# -lt 1 ]; then
+    usage >&2
+    exit 1
+  fi
+  local cmd="$1"; shift
+  case "$cmd" in
+    home)      cmd_home "$@" ;;
+    init)      cmd_init "$@" ;;
+    list)      cmd_list "$@" ;;
+    resolve)   cmd_resolve "$@" ;;
+    status)    cmd_status "$@" ;;
+    card)      cmd_card "$@" ;;
+    path)      cmd_path "$@" ;;
+    repo-info) cmd_repo_info "$@" ;;
+    attach)    cmd_attach "$@" ;;
+    set)       cmd_set "$@" ;;
+    commit)    cmd_commit "$@" ;;
+    delete)    cmd_delete "$@" ;;
+    -h|--help|help) usage; exit 0 ;;
+    *)
+      printf 'unknown command: %s\n' "$cmd" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

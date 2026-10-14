@@ -1,0 +1,155 @@
+---
+name: oberon-sync
+description: Append one dated PROGRESS.md journal entry for an Oberon project from observable git evidence, and refresh HANDOFF.md in the same store commit so a cold agent can resume. Use after a meaningful chunk of implementation or when the working tree's story has moved on. Reads the last entry first and no-ops when nothing observable changed. Never rewrites prior entries.
+---
+
+# oberon-sync
+
+Append one dated entry to the store's `PROGRESS.md`, rewrite the short `## Current state` header, then overwrite `HANDOFF.md` from the same evidence — both land in **one** store commit. Intent comes from the conversation; **spine** comes from `oberon repo-info` per contributing repo. No confirmation gate — but the no-op check is mandatory. Never raw `git` for store commits; never hand-edit `project.json`.
+
+## The `oberon` CLI
+
+Call `oberon` from `PATH`. Every store mutation goes through it. If the command is missing,
+stop and tell the user to run `install.sh` from the Oberon repo — never fall back to raw
+`git` on the store or to hand-editing `project.json`.
+
+## Resolve the project
+
+1. Explicit id argument, else
+2. `$OBERON_PROJECT`, else
+3. `oberon resolve --repo <abs current git root>`
+
+- One match → proceed.
+- Several → prompt which id.
+- None → no store claims this repo; there is no progress to journal. Point at `oberon-grill`, which mints the store once a design decision settles. Stop.
+
+Store dir: `oberon path <id>`. Read `project.json` only via that path (or `cat` the file) for `contributing_repos` — do not rewrite the manifest here; use `oberon attach` if a repo is missing.
+
+## No-op check (before any write)
+
+1. Read `PROGRESS.md`.
+2. Find the **last journal entry** (below the Current state header).
+3. For each contributing repo path in the manifest, run (with `--contract <slug>` when the manifest records a `contract_slug` for that repo):
+
+   ```bash
+   oberon repo-info "<PATH>" [--contract <slug>]
+   ```
+
+   JSON fields: `path`, `remote`, `branch`, `sha`, `dirty` (boolean), `stat` (`--stat`-style summary), and `contract` — the repo's change-contract folder as the harness left it: `slug`, `prd`, `spec`, `spec_valid` (null when the validator is not installed), `traceability` (`total`, `done`), `validation` (the Verifier's `validation.md` verdict or null) and `in_diff` (whether this branch touches the folder; null on the default branch).
+
+4. **Do nothing** (no file edit, no commit) when nothing observable changed since that last entry, e.g.:
+   - same branch + sha per repo, `dirty` still false, and no new meaningful intent to record; or
+   - dirty snapshot already recorded for the same dirty shape and conversation has no new chunk.
+
+   Then apply the **handoff check** (below) — a no-op journal does not always mean a fresh handoff. If the handoff check also passes, write nothing: tell the user you no-op'd and why, in one or two lines, then close with the status card (below). Exit the skill cleanly.
+
+5. Proceed only when branch/sha/dirty/stat moved, or the conversation completed a real chunk that is not yet reflected.
+
+## File shape
+
+`PROGRESS.md` layout:
+
+```md
+# <project title or tracker title>
+
+<optional one-line legend / how to read status words>
+
+## Current state
+
+<few lines only — where we are NOW. Rewritten wholesale every sync.
+ Never a status table. Never a growing log.>
+
+## Journal
+
+### YYYY-MM-DD HH:MM Z — <short title>
+
+- **repo** `<path>` · branch `<b>` · sha `<full or 12+ abbrev>` · dirty `<true|false>
+- stat: <stat summary or "clean">
+- …
+
+<prose: what changed, why it matters, evidence with path:line, tests run,
+ blockers. One entry = one sync invocation.>
+```
+
+If the file still has a legacy layout, introduce `## Current state` and a journal section without rewriting old body text into fake history — leave prior prose in place and start appending dated entries below a clear journal heading.
+
+### Rules
+
+- **One dated entry per invocation.** Never edit an earlier journal entry. Corrections = new entry that says what changed about the earlier claim.
+- **Rewrite `## Current state` wholesale** each successful sync. Hard-bound to a few lines: design settled?, code where?, what blocks next. Not a table of item statuses.
+- **Spine every entry on repo-info.** For each contributing repo touched (at least every repo in the manifest that participated, or all of them if unsure), record path, branch, sha, dirty, stat.
+- **Contract as evidence, never as a copy.** When a repo has a `contract`, add one line: `contract <slug> · prd/spec · spec_valid · <done>/<total> done · validation <verdict> · in diff <true|false>`. The harness (`/feature-implementation` → `spec-driven`) owns `tasks.md`, the traceability statuses and `validation.md`; Oberon reads them and never edits them. When the two disagree, the repo's files win and the entry says so. A feature branch with `in_diff: false` goes into `## Current state` as a blocker for its PR (ADR-0019).
+- **Dirty trees:** if `dirty` is true, the entry **MUST** say it is a **snapshot of unsaved work**, not a verifiable reference — because `HEAD` predates the work described. Do not pretend the sha alone re-derives the change.
+- **Observable density.** Prefer `path:line`, test counts, PR numbers, tag names. "Wired the store" is not enough; "store wired at `routes.go:630`, verified by …" is.
+- UTC date in the heading (or local with explicit offset); keep it honest.
+
+### Entry sketch
+
+```md
+### 2026-09-02 18:40Z — list route + 403 gate
+
+- **repo** `/Users/…/spa-alt-120` · branch `feature/alt-120-reminders-list` · sha `12cf14c…` · dirty `false`
+- stat: 4 files changed, 220 insertions(+)
+- contract `alt-120-reminders` · prd/spec · spec_valid true · 3/8 done · validation — · in diff true
+- `GET /reminders` at `reminders/api.go:29` with `.With(aiInternal)`; 27/27 package tests pass.
+- Gate test mutation-checked: drop middleware → fail, restore → pass.
+```
+
+Dirty example line:
+
+```md
+- **repo** `…/sar-alt-120` · branch `feature/…` · sha `3ece9baf…` · dirty `true`
+- **unsaved work snapshot** — HEAD predates the edits below; not a verifiable pin until commit.
+- stat: M internal/…/reminder_begin.go | …
+```
+
+## Write and commit
+
+1. Update `## Current state`.
+2. Append exactly one new journal entry.
+3. Overwrite `HANDOFF.md` (see **Refresh the handoff**). Write it *after* the journal so it can cite the new entry by date/title.
+4. Commit both files in one store commit (`oberon commit` stages the whole project directory):
+
+   ```bash
+   oberon commit <id> -m "sync: <short title from entry>"
+   ```
+
+   One commit keeps `PROGRESS.md` and `HANDOFF.md` at the same commit time, so the card's handoff row never reads `STALE` after a sync. Do not split it into a sync commit followed by a handoff commit.
+
+5. Close with the status card (below).
+
+## Refresh the handoff
+
+Every sync that writes a journal entry also overwrites `HANDOFF.md`. The rules live in `oberon-handoff` — read that skill and follow these sections **as written**, instead of restating them here:
+
+- **Read before writing** — you already hold `PROGRESS.md` and the repo-info JSON from the no-op check; reuse them, don't re-run `repo-info`.
+- **Write `HANDOFF.md`** — full overwrite, all required substance, pointers not copies.
+- **Redaction** and **Tone**.
+
+Skip its **Commit** and **Close with the status card** sections: this skill commits once and renders the one card.
+
+Handoff focus: if the user passed a focus argument to sync, use it for **Resume at**; otherwise derive it from the new `## Current state`.
+
+### Handoff check (no-op path only)
+
+When the journal no-op fires, still overwrite `HANDOFF.md` if any of these hold:
+
+- `HANDOFF.md` is missing, or `oberon card <id>` shows its row as `STALE`;
+- the session has in-flight work, blockers, or landmines not captured in the current `HANDOFF.md` (uncommitted findings, half-done patches, commands to re-run).
+
+In that case write only `HANDOFF.md` and commit with `oberon commit <id> -m "handoff: <short focus>"`. Otherwise write nothing.
+
+## Close with the status card
+
+```bash
+oberon card <id>
+```
+
+Paste stdout **verbatim** in a fenced block; ≤1 line before, ≤1 line after. Never hand-format a substitute, never paste `oberon status` JSON. Full rules: `oberon-status`.
+
+Sync-specific: the line before says what this entry recorded, whether any repo was a dirty snapshot, and that the handoff was refreshed in the same commit (older handoffs stay in the store repo's history). A **no-op** closes with the card too — "nothing observable changed" is exactly when the user wants the state in front of them; say whether the handoff was refreshed or also left as-is.
+
+## Failures
+
+- `repo-info` exit 5 (not a repo): record that path as missing/broken in the entry or current state; do not skip silently if the manifest still claims it.
+- Unknown project id: exit path from `path` / resolve — stop and say so.

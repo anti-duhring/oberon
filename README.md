@@ -1,22 +1,29 @@
 # Oberon
 
-A meta-prompting, context-engineering, spec-driven development workflow for Claude Code.
+Oberon gives an AI coding agent **durable working memory for one feature**: a
+small store of files kept **outside** the feature's own pull request, so the
+memory survives context compaction and session death.
 
-Oberon turns "I want to build X" into a structured project with captured decisions and an implementation-ready PRD — via two slash commands.
+It is **not a plugin**. It installs as plain skills into each host's skill root
+(Claude Code, Codex; omp discovers those same roots). No Claude plugin, no host
+hooks, no slash-command bundle — just six skill directories and a small CLI
+(ADR-0001).
 
-## Commands
+The store lives at `~/.oberon/<project-id>/`, **not** in your repo. That is
+deliberate: nothing Oberon writes can leak into the feature PR. The one exception
+is `oberon-grill` offering to write a repo-level `CONTEXT.md` entry or a
+`docs/adr/NNNN` — each offer is opt-in, and only then does something land in the
+PR.
 
-The canonical chain is `/obr-init` → `/obr-spec` → `/obr-plan` → `/obr-phase N`:
+Oberon **never** writes to a contributing repo's `.gitignore`. v1 did, and that
+is what made a store unrecoverable when the link lived only inside the repo.
 
-- `/obr-init` — initializes a project: runs a terse design grill, writes `.oberon/PROJECT.md` with captured decisions, and sets up state.
-- `/obr-spec` — generates a PRD from the project decisions and writes it to `.oberon/PRD.md`.
-- `/obr-plan` — decomposes the PRD into a 1–4 phase plan, discovers verification commands, and writes per-task files under `.oberon/phases/N/N-M.md`.
-- `/obr-phase N` — executes every task in phase `N` sequentially via fresh executor subagents; `/obr-phase N skip` marks a phase skipped without running it.
-- `/obr-status` — prints a read-only snapshot of the current Oberon project's phase and per-task progress, plus a single-line Next advisory. Safe to run from any state.
+## Getting started
 
-## Install
+Examples below use Claude Code's `/oberon-…` form. On Codex type the bare name
+(`oberon-grill`); on omp type `/skill:oberon-grill`. Same skill, three spellings.
 
-Requires Claude Code.
+### 1. Install
 
 ```bash
 git clone <this repo> ~/dev/oberon
@@ -24,74 +31,342 @@ cd ~/dev/oberon
 ./install.sh
 ```
 
-This symlinks the commands into `~/.claude/commands/` and the skills into `~/.claude/skills/`. Existing files are not overwritten; symlinks already pointing to this repo are left in place.
+Symlinks the six Oberon skills (plus `write-a-skill`) into `~/.agents/skills/`,
+`~/.claude/skills/` and `~/.codex/skills/`, and puts `oberon` on your PATH via
+`~/.local/bin`. Re-running is a no-op.
 
-Override the install location with `CLAUDE_HOME=/custom/path ./install.sh`.
+### 2. Start a feature — `/oberon-grill`
 
-## Usage
-
-From inside any project:
-
-```
-/obr-init            # grill me from scratch
-/obr-init brief.md   # seed the grill with an existing brief
-/obr-init "I want to build a todo app with offline support"
-```
-
-Follow the prompts. Oberon creates `.oberon/PROJECT.md` and `.oberon/state.json`, and appends `.oberon/` to `.gitignore` if one exists.
-
-When the grill finishes:
+From inside a contributing repo:
 
 ```
-/obr-spec
+/oberon-grill
 ```
 
-This reads `PROJECT.md`, asks a few gap-filling questions, and writes `.oberon/PRD.md`.
+There is **no init step**. Grill is the entry point: it asks first, then runs a
+one-question-at-a-time design interview. The store does not exist yet, because a
+project you can name is an *output* of that interview, not a prerequisite
+(ADR-0015).
 
-Then plan and execute:
+The **first settled decision** mints it: grill proposes a working project name
+from what you just agreed, confirms it in one line, calls `oberon init`, and
+writes that decision as `D1`. From there every settled item is appended to
+`DECISIONS.md` and committed as it crystallises, so a session that dies at Q20
+costs you one question, not twenty. Re-invoking `/oberon-grill` in a repo that
+already has a store resumes that store instead of minting a second one.
+
+If you end the interview before anything settles, **no store is created** —
+nothing to clean up.
+
+If grill offers a repo-level `CONTEXT.md` entry or an ADR under `docs/adr/`, that
+write is opt-in per offer, and it is the only thing Oberon puts in your PR.
+
+### 3. Check where you are — `/oberon-status`
+
+Coming back to a feature, or before you write anything down:
 
 ```
-/obr-plan            # propose phases + tasks, confirm verification commands
-/obr-phase 1         # run phase 1 — one executor subagent per task, one commit per task
-/obr-phase 2 skip    # mark a phase as skipped without running it
+/oberon-status
 ```
 
-`/obr-phase N` refuses to run if phase `N-1` isn't `completed` or `skipped`, and hard-aborts if the working tree is dirty. It auto-resumes from the first non-completed task if re-run after a crash or abort.
+Read-only TLDR of every project whose manifest claims the current repo (or one
+id you pass). Safe to invoke any time — it never mutates the store and needs no
+confirmation. Model-invocable; **just runs**.
 
-## Layout
+It prints the **status card**, the same block every other Oberon skill closes
+with (ADR-0017), rendered by `oberon card`:
 
 ```
-.
-├── commands/
-│   ├── obr-init.md
-│   ├── obr-spec.md
-│   ├── obr-plan.md
-│   ├── obr-phase.md
-│   └── obr-status.md
-├── skills/
-│   ├── obr-grill/     # terse interview skill used by /obr-init
-│   ├── obr-prd/       # PRD generator used by /obr-spec
-│   ├── obr-planner/   # phase + task generator used by /obr-plan
-│   └── obr-executor/  # per-task executor subagent spawned by /obr-phase
-├── install.sh
-├── uninstall.sh
-└── README.md
+── oberon ──────────────────────────────────────────────────────
+  project   ALT-120 reminder workflow
+  id        alt-120-reminder-workflow-9f3c
+  status    active · updated 3h ago
+  state     List route landed behind the ai-internal gate; the …
+  decisions 22 · last D20 D21 D22
+  progress  2026-09-02 18:40Z — list route + 403 gate
+  repos     spa-alt-120  feature/alt-120-reminders@12cf14c  DIRTY
+            sar-alt-120  main@3ece9ba  clean
+  handoff   updated 2d ago · STALE (progress is newer)
+  store     ~/.oberon/alt-120-reminder-workflow-9f3c
+  ! dirty tree — described work may not be in any commit
+────────────────────────────────────────────────────────────────
 ```
 
-## Running tests
+The project id is on the card because it is the argument every other command
+takes. `DIRTY` means the last sync entry may describe work that is in no commit
+(ADR-0013); `STALE` means `PROGRESS.md` was committed after `HANDOFF.md`, so a
+cold agent would resume from an out-of-date brief. Both timestamps come from the
+store repo's history, not file mtimes, so they survive a fresh clone.
 
-Oberon ships with a vendored copy of [bats-core](https://github.com/bats-core/bats-core) under `tests/bats/`, so the test suite works on a fresh clone with no extra install. Tests are split into three buckets: `tests/bash/` (installer/shell behaviour), `tests/contracts/` (structural + schema checks), and `tests/e2e/` (full-flow integration). The fast tier — `bash` + `contracts` — is the default entry point and is also what the pre-commit hook runs:
+### 4. Work, then record — `/oberon-sync`
+
+Build the feature as usual. When something durable changes (a decision, a
+milestone, a dead end):
+
+```
+/oberon-sync
+```
+
+Appends one dated entry to `PROGRESS.md` and rewrites its short "Current state"
+header. It never touches `DECISIONS.md` — that is grill's file — and never edits
+an earlier entry. Each entry is spined on real git evidence per contributing repo
+(branch, sha, dirty flag, `--stat` summary), and an entry taken against a dirty
+tree is marked as a snapshot of unsaved work rather than a verifiable reference.
+The same run overwrites `HANDOFF.md` (following `oberon-handoff`'s rules) and
+commits both files together, so the handoff is never older than the journal.
+`oberon-sync` is model-invocable and **just runs** — the agent may fire it on
+its own when it notices state worth keeping.
+
+### 5. Run the tests — `/oberon-test`
+
+```
+/oberon-test
+```
+
+Runs the suites that cover this project from the recipe in `TEST.md`, then
+records the run there: how to run each suite, prerequisites, landmines, the last
+results, and a ten-line run history. When `TEST.md` does not exist yet it is
+derived from repo evidence (CI config, task runners, language defaults) and
+created lazily — `oberon init` never seeds it (ADR-0016). So a cold session
+re-runs the right tests without rediscovering which suite matters, which service
+must be up, or which failure was already red.
+
+Failures are classified `regression` / `pre-existing` / `flaky`, and an
+unverified `pre-existing` claim says so. The skill never edits a test, adds a
+skip, or narrows a selector to reach green. It commits `TEST.md`, then calls
+`/oberon-sync` for the journal entry — a green re-run of an unchanged sha lets
+sync no-op, which is correct. **User-only** — `disable-model-invocation` is set,
+because running tests has side effects.
+
+### 6. Context running low — `/oberon-handoff`
+
+```
+/oberon-handoff
+```
+
+Rewrites `HANDOFF.md` so a fresh session can pick up cold: where you are, what
+matters, what not to redo. Overwrites the previous handoff; the rest of the
+store is untouched. `oberon-sync` already refreshes the handoff on every sync —
+run this on its own when you need one mid-chunk, without a new journal entry.
+
+### 7. Feature shipped — `/oberon-delete`
+
+```
+/oberon-delete
+```
+
+Removes the store directory from `~/.oberon` (git history kept). **User-only** —
+`disable-model-invocation` is set so the agent cannot start it. Requires
+explicit confirmation.
+
+### Who starts which skill
+
+| Skill | Model may start it? | Gate |
+|---|---|---|
+| `oberon-grill` | yes | asks first (and mints the store at the first decision) |
+| `oberon-status` | yes | runs directly (read-only) |
+| `oberon-sync` | yes | runs directly |
+| `oberon-test` | **no** | user-only (test runs have side effects) |
+| `oberon-implement` | **no** | user-only (drives code changes through the harness) |
+| `oberon-handoff` | yes | (session continuity) |
+| `oberon-delete` | **no** | user-only |
+
+## Skills reference
+
+| Skill | Role |
+|---|---|
+| `oberon-grill` | Design interview; mints the store at the first settled decision, resumes an existing one |
+| `oberon-status` | Read-only TLDR of project state (safe any time) |
+| `oberon-sync` | Append a dated `PROGRESS.md` entry from git evidence and refresh `HANDOFF.md` in the same commit |
+| `oberon-test` | Run the suites from `TEST.md`, record results, then call `oberon-sync` |
+| `oberon-implement` | Implement repo by repo through the harness's `/feature-implementation`, gated on each repo's change contract, journalling with `oberon-sync` |
+| `oberon-handoff` | Rewrite `HANDOFF.md` for the next cold start |
+| `oberon-delete` | Remove a store (explicit confirmation required) |
+
+Every one of them closes with the same status card (`oberon card <id>`, ADR-0017),
+so an invocation always leaves the project id, current state, repo cleanliness and
+store path on screen. `oberon-delete` shows it in its confirmation instead — after
+the delete there is no project left to render.
+
+### Invocation names by host
+
+| Host | Example (grill) |
+|---|---|
+| Claude Code | `/oberon-grill` |
+| Codex | `oberon-grill` |
+| omp | `/skill:oberon-grill` |
+
+omp discovers the copies under `~/.agents/skills/` through its always-on
+`agents` provider (`skills.enableAgentsUser`, default on). Its `claude` and
+`codex` user providers are opt-in — `skills.enableClaudeUser` and
+`skills.enableCodexUser` default to off — so linking only `~/.claude/skills/`
+and `~/.codex/skills/` leaves Oberon invisible to omp. That is why `install.sh`
+links the `~/.agents/skills/` root too; omp de-duplicates by `realpath`, so all
+three links still surface **one** skill. Check with
+`omp config get skills.enableClaudeUser`.
+
+## Store layout
+
+The store repo lives at `${OBERON_HOME:-$HOME/.oberon}` (a git repo). Each
+project is one subdirectory named by its `project_id`:
+
+```
+~/.oberon/<project-id>/
+├── project.json   # manifest
+├── DECISIONS.md   # numbered decisions D1…Dn + load-bearing facts (append-only)
+├── PROGRESS.md    # bounded "Current state" header + dated entries
+├── HANDOFF.md     # single file, overwritten each handoff
+└── TEST.md        # how to test + last results; created lazily by oberon-test
+```
+
+`oberon init` seeds the first four; `TEST.md` appears the first time
+`/oberon-test` runs (ADR-0016). Extra ad-hoc `NN-topic.md` notes are allowed but
+never created automatically. There is no per-store README.
+
+### `project.json` schema (`schema: 1`)
+
+```json
+{
+  "schema": 1,
+  "project_id": "alt-120-reminders-7f3a",
+  "project_name": "ALT-120 reminder workflow",
+  "project_status": "active",
+  "created_at": "2026-09-02T12:00:00Z",
+  "updated_at": "2026-09-02T12:00:00Z",
+  "contributing_repos": [
+    {
+      "name": "svc-accounts-receivable",
+      "remote": "git@github.com:getalternative/svc-accounts-receivable.git",
+      "path": "/Users/mateusvinicius/alt/svc-accounts-receivable",
+      "contract_slug": "alt-120-reminder-workflow"
+    }
+  ],
+  "push_remote": null
+}
+```
+
+`project_status` is exactly `active` or `closed`. `project_id` is a slug of
+`project_name` plus a 4-hex-char suffix. Timestamps are UTC ISO-8601 with `Z`.
+`contract_slug` is optional per repo: the `.specs/features/<slug>/` folder that
+holds that repo's change contract, recorded with `oberon attach --contract`.
+
+## The change contract and the harness
+
+Every `svc-*` pull request is a feature unless it carries `change:fix` or
+`change:chore`, and a feature owes `.specs/features/<slug>/prd.md` and `spec.md`
+in the repo it changes, with the spec in that PR's diff. The harness skills write
+those files: `/feature-prd`, `/feature-spec`, and `/feature-implementation`
+(which drives `spec-driven`'s design, tasks and Verifier). Oberon calls them
+rather than copying them (ADR-0019):
+
+| Oberon | Calls | Oberon keeps |
+|---|---|---|
+| `oberon-grill` | `/feature-prd`, then `/feature-spec`, per repo, seeded from `DECISIONS.md` | the decisions, and each repo's slug on the manifest |
+| `oberon-implement` | `/feature-implementation`, one repo at a time in build order | cross-repo facts and decisions made while building |
+| `oberon-sync`, `oberon-handoff`, `oberon-test` | nothing; they read `.specs/` through `oberon repo-info` | a journal line per repo: done/total, verdict, in diff |
+| `oberon card` | — | a `contract` row per repo, flagging what the CI check would |
+
+The harness owns everything under `.specs/`; Oberon owns the store. Neither
+writes the other's files, and when they disagree the repo wins. The validator is
+found through `OBERON_SPEC_VALIDATOR`, else `spec-driven/scripts/validate_spec.py`
+under the Claude, Agents or Codex skill root; without it the card says
+`spec unchecked`.
+
+## CLI (`bin/oberon`)
+
+Every mutating command bumps `updated_at`, stages **only** that project's
+directory, and commits it in the store repo. It pushes only when the manifest's
+`push_remote` is non-null. The store repo is created and `git init`'d on first
+use.
+
+| Command | Behaviour | Output | Failure |
+|---|---|---|---|
+| `oberon home` | print store repo path | path | — |
+| `oberon init --name NAME [--id ID] [--repo PATH]...` | mint id, create dir + 4 files, commit — called by `oberon-grill`, not by the user | `project_id` | exit 3 if `--id` is taken |
+| `oberon list [--status active\|closed\|all]` | one project per line | TSV `id<TAB>status<TAB>name` | — |
+| `oberon resolve [--repo PATH]` | ids whose manifest claims that repo (remote URL first, absolute path second) | one id per line | exit 4 if none |
+| `oberon status [ID]` | read-only TLDR payload for one id, or every project claiming the current repo | JSON array of project summaries | exit 4 if none claim the repo; exit 5 if `ID` unknown |
+| `oberon card [ID]` | the same payload rendered as the fixed status card every skill closes with | formatted text, one card per project | exit 4 if none claim the repo; exit 5 if `ID` unknown |
+| `oberon path ID` | absolute store directory | path | exit 5 if unknown |
+| `oberon repo-info PATH [--contract SLUG]` | inspect a contributing repo, with its change contract when `--contract` or a `feat/<slug>` branch whose folder exists names one | JSON `{path,remote,branch,sha,dirty,stat,contract}` | exit 5 if not a repo |
+| `oberon attach ID --repo PATH [--contract SLUG]` | add a contributing repo (idempotent), or record its `.specs/features/<slug>/` slug, commit | — | exit 5 if unknown id |
+| `oberon set ID --status active\|closed` | update manifest, commit | — | exit 5 if unknown id |
+| `oberon commit ID -m MSG` | stage `ID/`, commit | — | exit 0 no-op when nothing staged |
+| `oberon delete ID --yes` | `git rm -r` the directory, commit the removal (never rewrite history) | — | exit 6 without `--yes` |
+
+`resolve` scans every `*/project.json` — there is no central registry file.
+
+## Install details
+
+Requires `git` and `jq`.
 
 ```bash
-./tests/bats/bin/bats tests/bash tests/contracts
+./install.sh
 ```
 
-If you prefer the bare `bats tests/bash tests/contracts` form (or have your own system-installed bats), put `tests/bats/bin` on your `PATH` or install bats locally — either works, the vendored copy is just a zero-setup default.
+What it does:
 
-## Uninstall
+1. Symlinks each of `skills/oberon-{grill,status,sync,test,handoff,delete}` and
+   `skills/write-a-skill` into **all three**:
+   - `${AGENTS_HOME:-$HOME/.agents}/skills/` (omp / cross-harness native root)
+   - `${CLAUDE_HOME:-$HOME/.claude}/skills/`
+   - `${CODEX_HOME:-$HOME/.codex}/skills/`
+2. Symlinks `bin/oberon` into `${OBERON_BIN_DIR:-$HOME/.local/bin}` (creates the
+   directory if missing). Warns, but does not fail, when that directory is not
+   on `$PATH`.
+
+Existing non-symlink files are never overwritten; a symlink that already points
+at the correct source is reported as `ok:` and left alone.
+
+Env overrides:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENTS_HOME` | `$HOME/.agents` | Cross-harness skill root omp reads by default (skills under `skills/`) |
+| `CLAUDE_HOME` | `$HOME/.claude` | Claude Code config root (skills under `skills/`) |
+| `CODEX_HOME` | `$HOME/.codex` | Codex config root (skills under `skills/`) |
+| `OBERON_BIN_DIR` | `$HOME/.local/bin` | Where the `oberon` CLI symlink lands |
+| `OBERON_HOME` | `$HOME/.oberon` | Store repo root (used by the CLI, not the installer) |
+
+Nothing is registered as a Claude plugin or a host hook; the only omp-side
+footprint is the `~/.agents/skills/` symlinks, which omp reads with no config
+change.
+
+### Uninstall
 
 ```bash
 ./uninstall.sh
 ```
 
-Removes only the symlinks that point into this repo. Leaves unrelated files alone.
+Removes only symlinks that point into this repo, across all three skill roots
+and the bin dir. Unrelated files are left untouched. The same `AGENTS_HOME` /
+`CLAUDE_HOME` / `CODEX_HOME` / `OBERON_BIN_DIR` overrides apply.
+
+## Running tests
+
+Oberon ships a vendored copy of [bats-core](https://github.com/bats-core/bats-core)
+under `tests/bats/`, so the suite works on a fresh clone with no extra install:
+
+```bash
+./tests/bats/bin/bats tests/bash tests/contracts
+```
+
+## Design
+
+Glossary and settled terms: [`CONTEXT.md`](./CONTEXT.md).
+
+Architecture decisions: [`docs/adr/`](./docs/adr/) (ADR-0001 through ADR-0016).
+
+## Known gaps / ideas
+
+v1 carry-over ideas — not commitments for v2:
+
+- Explore a codebase once per repo and inherit that exploration on later projects
+  instead of re-running it
+- An option for quick tasks
+- Use fewer tokens / make runs faster
+- Prompt to clear context between phases
+- Skip phase-level verification when a phase has only one sub-phase
+- `oberon status` / `oberon card` do not report whether `TEST.md` exists or what
+  its last verdict was — the CLI parses `DECISIONS.md`, `PROGRESS.md` and
+  `HANDOFF.md` only (ADR-0016)

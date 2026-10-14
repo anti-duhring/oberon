@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
-# Oberon installer — symlinks commands and skills into ~/.claude/
+# Oberon installer — symlinks skills into the Agents, Claude, and Codex skill
+# roots and bin/oberon onto PATH. No plugins, no hooks, no slash-command install.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
-COMMANDS_DIR="$CLAUDE_DIR/commands"
-SKILLS_DIR="$CLAUDE_DIR/skills"
 
-COMMANDS=("obr-init.md" "obr-spec.md" "obr-plan.md" "obr-phase.md" "obr-archive.md" "obr-status.md")
-SKILLS=("obr-grill" "obr-prd" "obr-planner" "obr-executor" "write-a-skill")
+AGENTS_DIR="${AGENTS_HOME:-$HOME/.agents}"
+CLAUDE_DIR="${CLAUDE_HOME:-$HOME/.claude}"
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+BIN_DIR="${OBERON_BIN_DIR:-$HOME/.local/bin}"
+
+# ~/.agents/skills is the cross-harness (omp-native) root; the Claude and Codex
+# user roots are opt-in per harness, so installing only there leaves the skills
+# invisible to agents that ship those sources disabled.
+AGENTS_SKILLS_DIR="$AGENTS_DIR/skills"
+CLAUDE_SKILLS_DIR="$CLAUDE_DIR/skills"
+CODEX_SKILLS_DIR="$CODEX_DIR/skills"
+
+SKILLS=(
+  oberon-grill
+  oberon-sync
+  oberon-status
+  oberon-test
+  oberon-implement
+  oberon-handoff
+  oberon-delete
+  write-a-skill
+)
 
 log()  { printf '[oberon] %s\n' "$*"; }
 err()  { printf '[oberon] error: %s\n' "$*" >&2; }
 
-mkdir -p "$COMMANDS_DIR" "$SKILLS_DIR"
-
+# Refuse to clobber a non-symlink; accept an already-correct link as a no-op.
 link() {
   local src="$1"
   local dst="$2"
@@ -39,32 +56,40 @@ link() {
   log "link:  $dst -> $src"
 }
 
-status=0
+mkdir -p "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR" "$BIN_DIR"
 
-for cmd in "${COMMANDS[@]}"; do
-  src="$SRC_DIR/commands/$cmd"
-  dst="$COMMANDS_DIR/$cmd"
-  if [ ! -f "$src" ]; then
-    err "missing source: $src"
-    status=1
-    continue
-  fi
-  link "$src" "$dst" || status=1
-done
+status=0
 
 for skill in "${SKILLS[@]}"; do
   src="$SRC_DIR/skills/$skill"
-  dst="$SKILLS_DIR/$skill"
   if [ ! -d "$src" ]; then
     err "missing source: $src"
     status=1
     continue
   fi
-  link "$src" "$dst" || status=1
+  link "$src" "$AGENTS_SKILLS_DIR/$skill" || status=1
+  link "$src" "$CLAUDE_SKILLS_DIR/$skill" || status=1
+  link "$src" "$CODEX_SKILLS_DIR/$skill" || status=1
 done
 
+OBERON_BIN_SRC="$SRC_DIR/bin/oberon"
+if [ ! -e "$OBERON_BIN_SRC" ]; then
+  err "missing source: $OBERON_BIN_SRC"
+  status=1
+else
+  link "$OBERON_BIN_SRC" "$BIN_DIR/oberon" || status=1
+fi
+
+# Warn (do not fail) when the bin dir is not on PATH.
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*) ;;
+  *)
+    log "warn:  $BIN_DIR is not on \$PATH — add it so \`oberon\` resolves"
+    ;;
+esac
+
 if [ "$status" -eq 0 ]; then
-  log "done. Commands: /obr-init, /obr-spec, /obr-plan, /obr-phase, /obr-archive, /obr-status"
+  log "done. Skills: ${SKILLS[*]}. CLI: oberon"
 else
   err "completed with errors"
 fi

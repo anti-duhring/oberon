@@ -1,31 +1,47 @@
 #!/usr/bin/env bash
 # Shared helpers for bash-tier bats tests.
 #
-# These helpers give each test a private CLAUDE_HOME under BATS_TEST_TMPDIR so
-# the real ~/.claude/ is never touched, and expose the repo root as REPO_ROOT.
+# These helpers give each test private AGENTS_HOME / CLAUDE_HOME / CODEX_HOME /
+# OBERON_BIN_DIR under BATS_TEST_TMPDIR so the real ~/.agents, ~/.claude,
+# ~/.codex, and ~/.local/bin are never touched, and expose the repo root as
+# REPO_ROOT.
 
 # Resolve the repo root (two levels up from this file: tests/bash/).
 _oberon_tests_bash_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPO_ROOT="$(cd "$_oberon_tests_bash_dir/../.." && pwd)"
 unset _oberon_tests_bash_dir
 
-# Canonical lists, kept in sync with install.sh / uninstall.sh.
-OBERON_COMMANDS=(obr-init.md obr-spec.md obr-plan.md obr-phase.md obr-archive.md obr-status.md)
-OBERON_SKILLS=(obr-grill obr-prd obr-planner obr-executor)
+# Canonical skill list, kept in sync with install.sh / uninstall.sh.
+OBERON_SKILLS=(
+  oberon-grill
+  oberon-sync
+  oberon-status
+  oberon-test
+  oberon-implement
+  oberon-handoff
+  oberon-delete
+  write-a-skill
+)
 
-# Uninstall.sh currently omits obr-status.md from its list; tests that care
-# about what uninstall actually touches should use this list instead.
-OBERON_UNINSTALL_COMMANDS=(obr-init.md obr-spec.md obr-plan.md obr-phase.md obr-archive.md)
-
-# setup_claude_home — create an isolated CLAUDE_HOME for the current test.
-# Exports CLAUDE_HOME, COMMANDS_DIR, SKILLS_DIR. Nothing outside this dir is
-# touched by subsequent installer/uninstaller runs because install.sh and
-# uninstall.sh both honour $CLAUDE_HOME.
-setup_claude_home() {
+# setup_install_roots — create isolated Agents, Claude, Codex, and bin roots for
+# the current test. Exports AGENTS_HOME, CLAUDE_HOME, CODEX_HOME,
+# OBERON_BIN_DIR, plus the derived skill/bin paths install.sh and uninstall.sh
+# write into.
+setup_install_roots() {
+  export AGENTS_HOME="${BATS_TEST_TMPDIR}/agents-home"
   export CLAUDE_HOME="${BATS_TEST_TMPDIR}/claude-home"
-  export COMMANDS_DIR="$CLAUDE_HOME/commands"
-  export SKILLS_DIR="$CLAUDE_HOME/skills"
-  mkdir -p "$CLAUDE_HOME"
+  export CODEX_HOME="${BATS_TEST_TMPDIR}/codex-home"
+  export OBERON_BIN_DIR="${BATS_TEST_TMPDIR}/bin"
+  export AGENTS_SKILLS_DIR="$AGENTS_HOME/skills"
+  export CLAUDE_SKILLS_DIR="$CLAUDE_HOME/skills"
+  export CODEX_SKILLS_DIR="$CODEX_HOME/skills"
+  export BIN_DIR="$OBERON_BIN_DIR"
+  mkdir -p "$AGENTS_HOME" "$CLAUDE_HOME" "$CODEX_HOME" "$OBERON_BIN_DIR"
+}
+
+# Back-compat alias used by older test names in comments / muscle memory.
+setup_claude_home() {
+  setup_install_roots
 }
 
 # run_installer [shell] — invoke install.sh, defaulting to bash. Passing "zsh"
@@ -40,6 +56,39 @@ run_installer() {
 run_uninstaller() {
   local shell_bin="${1:-bash}"
   "$shell_bin" "$REPO_ROOT/uninstall.sh"
+}
+
+# assert_skill_links — every OBERON_SKILLS entry is a correct symlink in the
+# Agents, Claude, and Codex skill roots.
+assert_skill_links() {
+  local skill root
+  for skill in "${OBERON_SKILLS[@]}"; do
+    for root in "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR"; do
+      [ -L "$root/$skill" ]
+      [ "$(readlink "$root/$skill")" = "$REPO_ROOT/skills/$skill" ]
+    done
+  done
+}
+
+# assert_bin_link — bin/oberon is linked correctly.
+assert_bin_link() {
+  [ -L "$BIN_DIR/oberon" ]
+  [ "$(readlink "$BIN_DIR/oberon")" = "$REPO_ROOT/bin/oberon" ]
+}
+
+# assert_no_skill_links — every OBERON_SKILLS entry is gone from all roots.
+assert_no_skill_links() {
+  local skill root
+  for skill in "${OBERON_SKILLS[@]}"; do
+    for root in "$AGENTS_SKILLS_DIR" "$CLAUDE_SKILLS_DIR" "$CODEX_SKILLS_DIR"; do
+      [ ! -e "$root/$skill" ] && [ ! -L "$root/$skill" ]
+    done
+  done
+}
+
+# assert_no_bin_link — the oberon bin link is gone.
+assert_no_bin_link() {
+  [ ! -e "$BIN_DIR/oberon" ] && [ ! -L "$BIN_DIR/oberon" ]
 }
 
 # snapshot_tree <dir> — emit a stable, sorted listing of <dir> with each entry
@@ -65,4 +114,19 @@ snapshot_tree() {
         printf 'FILE %s\n' "$entry"
       fi
     done
+}
+
+# snapshot_install_state — stable snapshot of Agents, Claude, Codex, and bin
+# roots.
+snapshot_install_state() {
+  {
+    printf '### AGENTS_HOME\n'
+    snapshot_tree "$AGENTS_HOME"
+    printf '### CLAUDE_HOME\n'
+    snapshot_tree "$CLAUDE_HOME"
+    printf '### CODEX_HOME\n'
+    snapshot_tree "$CODEX_HOME"
+    printf '### BIN_DIR\n'
+    snapshot_tree "$BIN_DIR"
+  }
 }
