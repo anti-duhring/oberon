@@ -26,6 +26,7 @@ Commands:
                                Update project status
   commit ID -m MSG             Stage project dir and commit
   delete ID --yes              Remove project dir and commit removal
+  sync-store                   Pull rebase from origin, then push (when set)
 EOF
 }
 
@@ -860,15 +861,144 @@ bump_updated_at() {
   mv "$tmp" "$manifest"
 }
 
+# URL of the store repo's origin remote, or empty when unset. This is the
+# store-wide shared remote (cross-machine sync). Distinct from a project's
+# push_remote, which is an optional extra push target (ADR-0008, ADR-0020).
+store_origin_url() {
+  local home
+  home="$(oberon_home)"
+  [ -d "$home/.git" ] || return 0
+  git -C "$home" remote get-url origin 2>/dev/null || true
+}
+
+store_has_origin() {
+  local url
+  url="$(store_origin_url)"
+  [ -n "$url" ]
+}
+
+store_current_branch() {
+  local home branch
+  home="$(oberon_home)"
+  branch="$(git -C "$home" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+    printf '%s\n' "main"
+  else
+    printf '%s\n' "$branch"
+  fi
+}
+
+# git in the store, never prompting for credentials (so a missing helper cannot
+# hang a read command). Leaves any configured credential helper in place so
+# HTTPS remotes that already work keep working.
+store_git() {
+  GIT_TERMINAL_PROMPT=0 git -C "$(oberon_home)" "$@"
+}
+
+store_fetch_origin() {
+  local timeout_s
+  timeout_s="${OBERON_STORE_FETCH_TIMEOUT:-8}"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_s" env GIT_TERMINAL_PROMPT=0 git -C "$(oberon_home)" fetch -q origin
+  else
+    GIT_TERMINAL_PROMPT=0 git -C "$(oberon_home)" \
+      -c http.lowSpeedLimit=1000 -c "http.lowSpeedTime=${timeout_s}" \
+      fetch -q origin
+  fi
+}
+
+# Mutating path: pull --rebase --autostash from origin. Conflicts fail the
+# command (rebase is aborted so the store is not left mid-rebase). A failed
+# fetch only warns, so an offline machine can still record local work.
+store_pull_rebase() {
+  local home branch
+  home="$(oberon_home)"
+  store_has_origin || return 0
+  [ -d "$home/.git" ] || return 0
+  git -C "$home" rev-parse --verify HEAD >/dev/null 2>&1 || return 0
+
+  if ! store_fetch_origin >/dev/null 2>&1; then
+    printf 'warning: could not fetch store origin; continuing with local store\n' >&2
+    return 2
+  fi
+
+  branch="$(store_current_branch)"
+  git -C "$home" rev-parse --verify "origin/${branch}" >/dev/null 2>&1 || return 0
+
+  if ! store_git pull --rebase --autostash -q origin "$branch" >/dev/null 2>&1; then
+    if [ -d "$home/.git/rebase-merge" ] || [ -d "$home/.git/rebase-apply" ]; then
+      git -C "$home" rebase --abort >/dev/null 2>&1 || true
+    fi
+    printf 'error: store pull from origin conflicted with local commits. Resolve the conflict in %s and run: oberon sync-store\n' "$home" >&2
+    exit 1
+  fi
+  return 0
+}
+
+# Read path: quiet best-effort fetch + fast-forward. Never fails the command
+# (offline, timeout, or a diverged branch all become a no-op).
+store_pull_ff_best_effort() {
+  local home branch
+  home="$(oberon_home)"
+  store_has_origin || return 0
+  [ -d "$home/.git" ] || return 0
+  git -C "$home" rev-parse --verify HEAD >/dev/null 2>&1 || return 0
+
+  store_fetch_origin >/dev/null 2>&1 || return 0
+  branch="$(store_current_branch)"
+  git -C "$home" rev-parse --verify "origin/${branch}" >/dev/null 2>&1 || return 0
+  store_git merge --ff-only -q "origin/${branch}" >/dev/null 2>&1 || true
+}
+
+# After a store commit: push to origin if set. Offline / rejected push is a
+# warning; the local commit is kept.
+store_push_origin() {
+  local home branch
+  home="$(oberon_home)"
+  store_has_origin || return 0
+  git -C "$home" rev-parse --verify HEAD >/dev/null 2>&1 || return 0
+  branch="$(store_current_branch)"
+  if ! store_git push -q origin "HEAD:refs/heads/${branch}" >/dev/null 2>&1; then
+    printf 'warning: could not push store to origin (offline or rejected); local commit kept. Run: oberon sync-store\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+# Never let Finder clutter ride a project commit.
+unstage_ds_store() {
+  local home="$1"
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    git -C "$home" reset -q -- "$f" 2>/dev/null || true
+  done < <(git -C "$home" diff --cached --name-only -- '.DS_Store' '**/.DS_Store' 2>/dev/null || true)
+}
+
+stage_project() {
+  local home="$1"
+  local id="$2"
+  git -C "$home" add -- "$id"
+  unstage_ds_store "$home"
+}
+
 maybe_push() {
+  # Per-project extra remote (ADR-0008). Skipped when unset, or when it names
+  # the same remote as the store-wide origin (already pushed by store_push_origin).
   local id="$1"
   local manifest
   manifest="$(project_dir "$id")/project.json"
-  local remote
+  [ -f "$manifest" ] || return 0
+  local remote origin_url
   remote="$(jq -r '.push_remote // empty' "$manifest")"
-  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
-    git -C "$(oberon_home)" push -q "$remote" HEAD || true
+  if [ -z "$remote" ] || [ "$remote" = "null" ]; then
+    return 0
   fi
+  origin_url="$(store_origin_url)"
+  if [ "$remote" = "origin" ] || { [ -n "$origin_url" ] && [ "$remote" = "$origin_url" ]; }; then
+    return 0
+  fi
+  git -C "$(oberon_home)" push -q "$remote" HEAD || true
 }
 
 store_commit() {
@@ -878,11 +1008,12 @@ store_commit() {
   local msg="$2"
   local home
   home="$(oberon_home)"
-  git -C "$home" add -- "$id"
+  stage_project "$home" "$id"
   if git -C "$home" diff --cached --quiet; then
     return 0
   fi
   git -C "$home" commit -q -m "$msg"
+  store_push_origin || true
   maybe_push "$id"
 }
 
@@ -948,6 +1079,7 @@ cmd_init() {
   [ -n "$name" ] || die "init: --name is required"
 
   ensure_store_repo
+  store_pull_rebase || true
   local home
   home="$(oberon_home)"
 
@@ -1042,6 +1174,7 @@ cmd_list() {
   local home
   home="$(oberon_home)"
   [ -d "$home" ] || return 0
+  store_pull_ff_best_effort
 
   local manifest id st name
   # shellcheck disable=SC2012
@@ -1078,6 +1211,7 @@ cmd_resolve() {
   if [ -z "$repo_path" ]; then
     repo_path="."
   fi
+  store_pull_ff_best_effort
   resolve_claiming_ids "$repo_path"
 }
 
@@ -1121,6 +1255,7 @@ parse_report_id() {
 cmd_status() {
   local ids_raw line
   parse_report_id status "$@"
+  store_pull_ff_best_effort
   ids_raw="$(resolve_report_ids status "$REPORT_ID")"
 
   local out='[]'
@@ -1136,6 +1271,7 @@ cmd_status() {
 cmd_card() {
   local ids_raw line
   parse_report_id card "$@"
+  store_pull_ff_best_effort
   ids_raw="$(resolve_report_ids card "$REPORT_ID")"
 
   local first=1
@@ -1150,6 +1286,7 @@ cmd_card() {
 cmd_path() {
   [ $# -ge 1 ] || die "path: ID required"
   local id="$1"
+  store_pull_ff_best_effort
   require_project "$id"
   project_dir "$id"
 }
@@ -1241,6 +1378,7 @@ cmd_attach() {
     die "attach: --contract must be a lower-case kebab slug: $cslug"
   fi
   require_project "$id"
+  store_pull_rebase || true
 
   if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
     die "attach: not a git repo: $repo"
@@ -1321,6 +1459,7 @@ cmd_set() {
     *) die "set: --status must be active|closed" ;;
   esac
   require_project "$id"
+  store_pull_rebase || true
 
   local manifest tmp
   manifest="$(project_dir "$id")/project.json"
@@ -1353,13 +1492,14 @@ cmd_commit() {
   [ -n "$id" ] || die "commit: ID required"
   [ -n "$msg" ] || die "commit: -m MSG required"
   require_project "$id"
+  store_pull_rebase || true
 
   local home
   home="$(oberon_home)"
   # Stage first. If the project tree is already identical to HEAD, nothing is
   # staged and we exit 0 without an empty commit (and without a spurious
-  # updated_at-only commit).
-  git -C "$home" add -- "$id"
+  # updated_at-only commit). .DS_Store is never staged.
+  stage_project "$home" "$id"
   if git -C "$home" diff --cached --quiet; then
     return 0
   fi
@@ -1388,11 +1528,12 @@ cmd_delete() {
     exit 6
   fi
   require_project "$id"
+  store_pull_rebase || true
 
   local home
   home="$(oberon_home)"
   # Capture push_remote before removal
-  local remote
+  local remote origin_url
   remote="$(jq -r '.push_remote // empty' "$(project_dir "$id")/project.json")"
 
   git -C "$home" rm -rq -- "$id"
@@ -1400,8 +1541,31 @@ cmd_delete() {
     return 0
   fi
   git -C "$home" commit -q -m "oberon delete $id"
-  if [ -n "$remote" ] && [ "$remote" != "null" ]; then
+  store_push_origin || true
+  origin_url="$(store_origin_url)"
+  if [ -n "$remote" ] && [ "$remote" != "null" ]     && [ "$remote" != "origin" ]     && { [ -z "$origin_url" ] || [ "$remote" != "$origin_url" ]; }; then
     git -C "$home" push -q "$remote" HEAD || true
+  fi
+}
+
+cmd_sync_store() {
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+  esac
+  ensure_store_repo
+  if ! store_has_origin; then
+    die "sync-store: the store has no origin remote. Add one with: git -C $(oberon_home) remote add origin <url>"
+  fi
+  # Conflict is fatal (store_pull_rebase exits 1). A failed fetch is a warning
+  # (exit 2 from the pull); we still try to push any local commits.
+  local pull_st=0 push_st=0
+  store_pull_rebase || pull_st=$?
+  store_push_origin || push_st=$?
+  if [ "$pull_st" -eq 2 ] && [ "$push_st" -ne 0 ]; then
+    die "sync-store: could not reach origin"
+  fi
+  if [ "$push_st" -ne 0 ]; then
+    exit 1
   fi
 }
 
@@ -1424,6 +1588,7 @@ main() {
     set)       cmd_set "$@" ;;
     commit)    cmd_commit "$@" ;;
     delete)    cmd_delete "$@" ;;
+    sync-store) cmd_sync_store "$@" ;;
     -h|--help|help) usage; exit 0 ;;
     *)
       printf 'unknown command: %s\n' "$cmd" >&2

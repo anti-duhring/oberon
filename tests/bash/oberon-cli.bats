@@ -828,3 +828,149 @@ stub_validator() {
   [ "$(jq -r '.contract.on_feature_branch' <<<"$output")" = "true" ]
   [ "$(jq -r '.contract.in_diff' <<<"$output")" = "false" ]
 }
+
+# --- store origin sync (ADR-0020) ---
+
+publish_store_origin() {
+  export ORIGIN_BARE="${BATS_TEST_TMPDIR}/origin.git"
+  git init -q --bare "$ORIGIN_BARE"
+  git -C "$OBERON_HOME" remote add origin "$ORIGIN_BARE"
+  git -C "$OBERON_HOME" push -q -u origin HEAD
+}
+
+clone_second_store() {
+  export OBERON_HOME_2="${BATS_TEST_TMPDIR}/oberon-home-2"
+  git clone -q "$ORIGIN_BARE" "$OBERON_HOME_2"
+  git -C "$OBERON_HOME_2" config user.name "Test"
+  git -C "$OBERON_HOME_2" config user.email "test@example.com"
+}
+
+@test "mutating command with origin pulls remote work then pushes" {
+  local id
+  id="$(oberon init --name "Shared store")"
+  publish_store_origin
+  clone_second_store
+
+  printf 'remote note\n' >>"$OBERON_HOME_2/$id/DECISIONS.md"
+  OBERON_HOME="$OBERON_HOME_2" oberon commit "$id" -m "remote note"
+  ! grep -q "remote note" "$OBERON_HOME/$id/DECISIONS.md"
+
+  oberon set "$id" --status closed
+  grep -q "remote note" "$OBERON_HOME/$id/DECISIONS.md"
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "closed" ]
+  git -C "$OBERON_HOME_2" pull -q --ff-only
+  [ "$(jq -r '.project_status' "$OBERON_HOME_2/$id/project.json")" = "closed" ]
+}
+
+@test "pull conflict fails the command and does not clobber local work" {
+  local id
+  id="$(oberon init --name "Conflict store")"
+  publish_store_origin
+  clone_second_store
+
+  echo "local-only" >>"$OBERON_HOME/$id/DECISIONS.md"
+  git -C "$OBERON_HOME" add -- "$id/DECISIONS.md"
+  git -C "$OBERON_HOME" commit -q -m "local edit"
+
+  echo "remote-only" >>"$OBERON_HOME_2/$id/DECISIONS.md"
+  git -C "$OBERON_HOME_2" add -- "$id/DECISIONS.md"
+  git -C "$OBERON_HOME_2" commit -q -m "remote edit"
+  git -C "$OBERON_HOME_2" push -q origin HEAD
+
+  run oberon set "$id" --status closed
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"conflicted"* ]]
+  # Local commit and uncommitted rebase debris are not left behind; the
+  # local-only line is still the committed content.
+  [ ! -d "$OBERON_HOME/.git/rebase-merge" ]
+  [ ! -d "$OBERON_HOME/.git/rebase-apply" ]
+  grep -q "local-only" "$OBERON_HOME/$id/DECISIONS.md"
+  ! grep -q "remote-only" "$OBERON_HOME/$id/DECISIONS.md"
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "active" ]
+}
+
+@test "unreachable origin does not fail a mutating command" {
+  local id
+  id="$(oberon init --name "Offline store")"
+  git -C "$OBERON_HOME" remote add origin "https://127.0.0.1:1/oberon-store.git"
+  export OBERON_STORE_FETCH_TIMEOUT=2
+  run oberon set "$id" --status closed
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning:"* ]]
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "closed" ]
+}
+
+@test "list fast-forwards from origin and still works when origin is unreachable" {
+  local id
+  id="$(oberon init --name "Read pull")"
+  publish_store_origin
+  clone_second_store
+
+  OBERON_HOME="$OBERON_HOME_2" oberon set "$id" --status closed
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "active" ]
+  run oberon list --status all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"closed"$'\t'* ]]
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "closed" ]
+
+  git -C "$OBERON_HOME" remote set-url origin "https://127.0.0.1:1/oberon-store.git"
+  export OBERON_STORE_FETCH_TIMEOUT=2
+  run oberon list --status all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$id"* ]]
+}
+
+@test "commit does not stage .DS_Store" {
+  local id before after
+  id="$(oberon init --name "Finder clutter")"
+  printf 'note\n' >>"$OBERON_HOME/$id/DECISIONS.md"
+  touch "$OBERON_HOME/$id/.DS_Store"
+  oberon commit "$id" -m "add a note"
+  run git -C "$OBERON_HOME" ls-files -- "$id"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *".DS_Store"* ]]
+
+  touch "$OBERON_HOME/$id/.DS_Store"
+  before="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  oberon commit "$id" -m "should no-op"
+  after="$(git -C "$OBERON_HOME" rev-parse HEAD)"
+  [ "$before" = "$after" ]
+}
+
+@test "sync-store pulls and pushes; without origin it fails" {
+  local id
+  run oberon sync-store
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no origin remote"* ]]
+
+  id="$(oberon init --name "Sync store")"
+  publish_store_origin
+  clone_second_store
+  OBERON_HOME="$OBERON_HOME_2" oberon set "$id" --status closed
+
+  run oberon sync-store
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.project_status' "$OBERON_HOME/$id/project.json")" = "closed" ]
+}
+
+@test "push_remote still pushes to a different remote after origin" {
+  local id extra
+  id="$(oberon init --name "Extra remote")"
+  publish_store_origin
+  extra="${BATS_TEST_TMPDIR}/extra.git"
+  git init -q --bare "$extra"
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg r "$extra" '.push_remote = $r' "$OBERON_HOME/$id/project.json" >"$tmp"
+  mv "$tmp" "$OBERON_HOME/$id/project.json"
+  # Bypass CLI so we can set push_remote without a second commit hook dance.
+  git -C "$OBERON_HOME" add -- "$id/project.json"
+  git -C "$OBERON_HOME" commit -q -m "set push_remote"
+  git -C "$OBERON_HOME" push -q origin HEAD
+
+  oberon set "$id" --status closed
+  # Both remotes should have the close commit.
+  git --git-dir="$ORIGIN_BARE" log -1 --pretty=%s | grep -q "status=closed"
+  git --git-dir="$extra" log -1 --pretty=%s | grep -q "status=closed"
+}

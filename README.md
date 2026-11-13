@@ -275,9 +275,18 @@ under the Claude, Agents or Codex skill root; without it the card says
 ## CLI (`bin/oberon`)
 
 Every mutating command bumps `updated_at`, stages **only** that project's
-directory, and commits it in the store repo. It pushes only when the manifest's
-`push_remote` is non-null. The store repo is created and `git init`'d on first
-use.
+directory, and commits it in the store repo. The store repo is created and
+`git init`'d on first use.
+
+If the store repo has an `origin` remote, mutating commands first run
+`git pull --rebase --autostash` (a conflict fails the command and does not
+clobber local work) and push to `origin` after the commit (a failed push is a
+warning). The per-project `push_remote` remains an optional extra push target
+and is skipped when it names `origin` or the same URL, so the two do not
+double-push (ADR-0008, ADR-0020). Read commands (`list`, `status`, `card`,
+`resolve`, `path`) do a quiet best-effort fetch and fast-forward, and never
+fail if `origin` is unreachable. `oberon sync-store` runs the pull-and-push
+cycle on its own.
 
 | Command | Behaviour | Output | Failure |
 |---|---|---|---|
@@ -293,6 +302,7 @@ use.
 | `oberon set ID --status active\|closed` | update manifest, commit | — | exit 5 if unknown id |
 | `oberon commit ID -m MSG` | stage `ID/`, commit | — | exit 0 no-op when nothing staged |
 | `oberon delete ID --yes` | `git rm -r` the directory, commit the removal (never rewrite history) | — | exit 6 without `--yes` |
+| `oberon sync-store` | pull `--rebase --autostash` from `origin`, then push | — | exit 1 if there is no `origin`, a pull conflict, or neither pull nor push can reach `origin` |
 
 `resolve` scans every `*/project.json` — there is no central registry file.
 
@@ -355,7 +365,7 @@ under `tests/bats/`, so the suite works on a fresh clone with no extra install:
 
 Glossary and settled terms: [`CONTEXT.md`](./CONTEXT.md).
 
-Architecture decisions: [`docs/adr/`](./docs/adr/) (ADR-0001 through ADR-0016).
+Architecture decisions: [`docs/adr/`](./docs/adr/) (ADR-0001 through ADR-0020).
 
 ## Known gaps / ideas
 
